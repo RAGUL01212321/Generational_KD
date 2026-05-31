@@ -1,0 +1,257 @@
+#!/usr/bin/env python3
+"""
+Knowledge Distillation Training Script
+
+Distills Qwen 1.8B (Teacher) to Qwen 0.5B (Student)
+"""
+
+import argparse
+import sys
+from pathlib import Path
+
+from kd_config import KDConfig
+from kd_trainer import KDTrainer
+
+# Load defaults from config
+_default_config = KDConfig()
+
+def next_run_dir(base_dir: str, prefix: str) -> str:
+    """Create and return the next numbered run directory."""
+    base_path = Path(base_dir)
+    base_path.mkdir(parents=True, exist_ok=True)
+
+    run_number = 1
+    while (base_path / f"{prefix}_{run_number}").exists():
+        run_number += 1
+
+    run_path = base_path / f"{prefix}_{run_number}"
+    run_path.mkdir(parents=True, exist_ok=False)
+    return str(run_path)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description="Knowledge Distillation Training",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Default settings (3 epochs)
+  python3 train_kd.py
+  
+  # With specific dataset file
+  python3 train_kd.py --dataset-file Dataset/ApolloCorpus/pretrain/medicalPaper_en_qa.json
+  
+  # Custom number of epochs
+  python3 train_kd.py --epochs 5
+  
+  # Custom batch size and learning rate
+  python3 train_kd.py --batch-size 8 --lr 5e-5
+  
+  # Limit data for quick testing
+  python3 train_kd.py --max-samples 1000
+  
+  # Resume from checkpoint
+  python3 train_kd.py --resume kd_checkpoints/step_100.pt
+        """,
+    )
+    
+    parser.add_argument(
+        "--epochs",
+        type=int,
+        default=_default_config.num_epochs,
+        help=f"Number of training epochs (default: {_default_config.num_epochs})",
+    )
+    parser.add_argument(
+        "--batch-size",
+        type=int,
+        default=_default_config.batch_size,
+        help=f"Microbatch size (default: {_default_config.batch_size})",
+    )
+    parser.add_argument(
+        "--gradient-accumulation-steps",
+        type=int,
+        default=_default_config.gradient_accumulation_steps,
+        help=f"Number of microbatches per optimizer step (default: {_default_config.gradient_accumulation_steps})",
+    )
+    parser.add_argument(
+        "--lr",
+        type=float,
+        default=_default_config.learning_rate,
+        help=f"Learning rate (default: {_default_config.learning_rate})",
+    )
+    parser.add_argument(
+        "--kd-loss-weight",
+        type=float,
+        default=_default_config.kd_loss_weight,
+        help=f"Weight for hidden-state KD loss (default: {_default_config.kd_loss_weight})",
+    )
+    parser.add_argument(
+        "--ce-loss-weight",
+        type=float,
+        default=_default_config.ce_loss_weight,
+        help=f"Weight for causal LM loss (default: {_default_config.ce_loss_weight})",
+    )
+    parser.add_argument(
+        "--common-dim",
+        type=int,
+        default=_default_config.common_dim,
+        help=f"Common projection dimension (default: {_default_config.common_dim})",
+    )
+    parser.add_argument(
+        "--seq-length",
+        type=int,
+        default=_default_config.seq_length,
+        help=f"Sequence length (default: {_default_config.seq_length})",
+    )
+    parser.add_argument(
+        "--dataset-file",
+        type=str,
+        default=_default_config.dataset_file,
+        help=f"Dataset JSON file to use (default: {_default_config.dataset_file})",
+    )
+    parser.add_argument(
+        "--max-samples",
+        type=int,
+        default=None,
+        help="Max samples to use (default: None = all)",
+    )
+    parser.add_argument(
+        "--max-steps",
+        type=int,
+        default=None,
+        help="Max training steps (default: None = no limit)",
+    )
+    parser.add_argument(
+        "--save-every",
+        type=int,
+        default=_default_config.save_every,
+        help=f"Save checkpoint every N steps (default: {_default_config.save_every})",
+    )
+    parser.add_argument(
+        "--device",
+        type=str,
+        default=_default_config.device,
+        choices=["cuda", "cpu"],
+        help=f"Device to use (default: {_default_config.device})",
+    )
+    parser.add_argument(
+        "--resume",
+        type=str,
+        default=None,
+        help="Resume from checkpoint path",
+    )
+    parser.add_argument(
+        "--checkpoint-dir",
+        type=str,
+        default=_default_config.checkpoint_dir,
+        help=f"Base checkpoint directory (default: {_default_config.checkpoint_dir})",
+    )
+    parser.add_argument(
+        "--run-prefix",
+        type=str,
+        default="Qwen",
+        help="Prefix for numbered run folders (default: Qwen)",
+    )
+    parser.add_argument(
+        "--no-new-run-dir",
+        action="store_true",
+        help="Write directly to --checkpoint-dir instead of creating Qwen_N.",
+    )
+    
+    args = parser.parse_args()
+    
+    # Create config
+    dataset_path = args.dataset_file
+    
+    # Resolve path relative to parent directory (Gen_KD root) if it doesn't exist locally
+    from pathlib import Path
+    dataset_path_obj = Path(dataset_path)
+    if not dataset_path_obj.exists():
+        parent_path = Path("..") / dataset_path
+        if parent_path.exists():
+            dataset_path = str(parent_path)
+    
+    if args.resume and not args.no_new_run_dir:
+        resolved_checkpoint_dir = str(Path(args.resume).resolve().parent)
+    elif args.no_new_run_dir:
+        Path(args.checkpoint_dir).mkdir(parents=True, exist_ok=True)
+        resolved_checkpoint_dir = args.checkpoint_dir
+    else:
+        resolved_checkpoint_dir = next_run_dir(args.checkpoint_dir, args.run_prefix)
+
+    config = KDConfig(
+        num_epochs=args.epochs,
+        batch_size=args.batch_size,
+        gradient_accumulation_steps=args.gradient_accumulation_steps,
+        learning_rate=args.lr,
+        kd_loss_weight=args.kd_loss_weight,
+        ce_loss_weight=args.ce_loss_weight,
+        common_dim=args.common_dim,
+        seq_length=args.seq_length,
+        dataset_path=dataset_path,
+        dataset_file=args.dataset_file,
+        max_samples=args.max_samples,
+        max_steps=args.max_steps,
+        save_every=args.save_every,
+        device=args.device,
+        checkpoint_dir=resolved_checkpoint_dir,
+    )
+    
+    print("\n" + "=" * 70)
+    print("KNOWLEDGE DISTILLATION TRAINING")
+    print("=" * 70)
+    print(f"\nTeacher Model : {config.teacher_model_id}")
+    print(f"Student Model : {config.student_model_id}")
+    print(f"\nTraining Config:")
+    print(f"  Epochs       : {config.num_epochs}")
+    print(f"  Batch size   : {config.batch_size}")
+    print(f"  Grad accum   : {config.gradient_accumulation_steps}")
+    print(f"  Effective BS : {config.batch_size * config.gradient_accumulation_steps}")
+    print(f"  Learning rate: {config.learning_rate}")
+    print(f"  Optimizer    : {config.optimizer}")
+    print(f"  KD loss wt   : {config.kd_loss_weight}")
+    print(f"  CE loss wt   : {config.ce_loss_weight}")
+    print(f"  Common dim   : {config.common_dim}")
+    print(f"  Seq length   : {config.seq_length}")
+    print(f"  Device       : {config.device}")
+    print(f"  Dataset      : {config.dataset_path}")
+    print(f"  Max samples  : {config.max_samples or 'all'}")
+    print(f"  Max steps    : {config.max_steps or 'none'}")
+    print(f"\nCheckpoints saved to: {config.checkpoint_dir}")
+    print("=" * 70 + "\n")
+    
+    # Create trainer
+    trainer = KDTrainer(config)
+    
+    # Resume from checkpoint if provided
+    if args.resume:
+        if not Path(args.resume).exists():
+            print(f"Error: Checkpoint not found: {args.resume}")
+            sys.exit(1)
+        trainer.load_checkpoint(args.resume)
+        print(f"Resumed from checkpoint: {args.resume}\n")
+    
+    # Train
+    try:
+        trainer.train(num_epochs=args.epochs)
+        print("\n✓ Training completed successfully!")
+        return 0
+    except KeyboardInterrupt:
+        print("\n\n⚠ Training interrupted by user")
+        print("Saving checkpoint...")
+        trainer.save_checkpoint("interrupted")
+        return 1
+    except Exception as e:
+        print(f"\n✗ Error during training: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+
+
+'''
+ python3 train_kd.py   --epochs 3   --batch-size 2   --gradient-accumulation-steps 4   --dataset-file Dataset/ApolloCorpus/pretrain/medicalPaper_en_qa.json
+ '''

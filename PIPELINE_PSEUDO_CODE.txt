@@ -1,0 +1,463 @@
+================================================================================
+APOLLO KNOWLEDGE DISTILLATION PIPELINE - PSEUDO CODE
+================================================================================
+
+High-level overview of the entire KD training and validation pipeline for 
+distilling Qwen1.5-1.8B (teacher) → Qwen1.5-0.5B (student)
+
+================================================================================
+1. CONFIGURATION PHASE
+================================================================================
+
+LoadConfig():
+    READ kd_config.py
+    SET training_params = {
+        epochs: 3,
+        batch_size: 1,
+        gradient_accumulation_steps: 4,
+        learning_rate: 1e-5,
+        kd_loss_weight: 0.6,
+        ce_loss_weight: 0.4,
+        dataset: "medicalGuideline_en_qa_90k.json",
+        seq_length: 512,
+        device: "cuda"
+    }
+    SET model_params = {
+        teacher_model_id: "Qwen/Qwen1.5-1.8B",
+        student_model_id: "Qwen/Qwen1.5-0.5B",
+        common_dim: 768  // hidden state projection dimension
+    }
+    RETURN training_params, model_params
+
+
+================================================================================
+2. DATA LOADING PHASE
+================================================================================
+
+LoadDataset():
+    READ dataset file (JSON format: array of [question, answer] pairs)
+    FOR each sample in dataset:
+        tokenize(question + answer)
+        STORE as input_ids, attention_mask, labels
+    END FOR
+    RETURN dataset
+
+CreateDataLoader(dataset, batch_size, gradient_accumulation_steps):
+    chunks = split_dataset_into_batches(dataset, batch_size)
+    FOR each chunk in chunks:
+        ACCUMULATE gradient_accumulation_steps batches before optimizer step
+    END FOR
+    RETURN dataloader
+
+
+================================================================================
+3. MODEL INITIALIZATION PHASE
+================================================================================
+
+InitializeModels():
+    // Load teacher model (frozen)
+    teacher_model = LOAD_PRETRAINED("Qwen/Qwen1.5-1.8B", dtype=float32)
+    teacher_model.eval()  // Set to evaluation mode
+    FREEZE all teacher_model parameters
+    
+    // Load student model (trainable)
+    student_model = LOAD_PRETRAINED("Qwen/Qwen1.5-0.5B", dtype=float32)
+    student_model.train()  // Set to training mode
+    
+    // Create projection layers
+    proj_teacher = ProjectionLayer(teacher_hidden_dim=2048, common_dim=768)
+    proj_teacher.eval()
+    FREEZE proj_teacher parameters
+    
+    proj_student = ProjectionLayer(student_hidden_dim=1024, common_dim=768)
+    proj_student.train()
+    
+    // Initialize optimizer
+    optimizer = Adafactor(
+        params=student_model.parameters(),
+        lr=learning_rate,
+        scale_parameter=True,
+        relative_step=True
+    )
+    
+    RETURN teacher_model, student_model, proj_teacher, proj_student, optimizer
+
+
+================================================================================
+4. PROJECTION MECHANISM
+================================================================================
+
+ProjectionLayer(hidden_states, input_dim, output_dim):
+    // Linear projection to common dimension
+    // Ensures student and teacher can be compared in same space
+    
+    projected = LINEAR_LAYER(hidden_states)  // (batch, seq_len, input_dim) → (batch, seq_len, output_dim)
+    RETURN projected
+
+
+================================================================================
+5. LOSS COMPUTATION PHASE
+================================================================================
+
+ComputeLosses(student_hidden, teacher_hidden, student_logits, labels, attention_mask):
+    
+    // ===== KNOWLEDGE DISTILLATION LOSS (MSE on hidden states) =====
+    proj_student = proj_student_layer(student_hidden)
+    proj_teacher = proj_teacher_layer(teacher_hidden)
+    
+    // Mean pooling with attention mask
+    pooled_student = MEAN_POOL(proj_student, attention_mask)
+    pooled_teacher = MEAN_POOL(proj_teacher, attention_mask)
+    
+    kd_loss = MSE(pooled_student, pooled_teacher)
+    
+    
+    // ===== CROSS-ENTROPY LOSS (language modeling) =====
+    // Shift logits for next-token prediction
+    shift_logits = student_logits[..., :-1, :]
+    shift_labels = labels[..., 1:]
+    shift_mask = attention_mask[..., 1:]
+    
+    ce_loss_per_token = CROSS_ENTROPY(shift_logits, shift_labels, reduction=none)
+    masked_ce_loss = ce_loss_per_token * shift_mask
+    ce_loss = masked_ce_loss.sum() / shift_mask.sum()
+    
+    
+    // ===== COMBINED LOSS =====
+    total_loss = (kd_loss_weight * kd_loss) + (ce_loss_weight * ce_loss)
+    //         = (0.6 * kd_loss) + (0.4 * ce_loss)
+    
+    RETURN total_loss, kd_loss, ce_loss
+
+
+================================================================================
+6. TRAINING LOOP
+================================================================================
+
+TrainEpoch(epoch_num):
+    accumulated_loss = 0
+    accumulated_kd_loss = 0
+    accumulated_ce_loss = 0
+    num_steps = 0
+    
+    FOR EACH batch IN dataloader:
+        input_ids = batch["input_ids"]
+        attention_mask = batch["attention_mask"]
+        
+        // ===== TEACHER FORWARD (no gradients) =====
+        WITH torch.no_grad():
+            teacher_output = teacher_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True
+            )
+            teacher_hidden = teacher_output.hidden_states[-1]
+        
+        
+        // ===== STUDENT FORWARD (with gradients) =====
+        student_output = student_model(
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            output_hidden_states=True
+        )
+        student_hidden = student_output.hidden_states[-1]
+        student_logits = student_output.logits
+        
+        
+        // ===== LOSS COMPUTATION =====
+        total_loss, kd_loss, ce_loss = ComputeLosses(
+            student_hidden, teacher_hidden, student_logits, input_ids, attention_mask
+        )
+        
+        // Scale loss by gradient accumulation steps
+        scaled_loss = total_loss / gradient_accumulation_steps
+        
+        
+        // ===== BACKWARD PASS =====
+        scaled_loss.backward()
+        
+        accumulated_loss += total_loss.item()
+        accumulated_kd_loss += kd_loss.item()
+        accumulated_ce_loss += ce_loss.item()
+        num_steps += 1
+        
+        
+        // ===== OPTIMIZER STEP (every N accumulated steps) =====
+        IF num_steps % gradient_accumulation_steps == 0:
+            CLIP_GRAD_NORM(student_model.parameters(), max_norm=1.0)
+            optimizer.step()
+            optimizer.zero_grad()
+            
+            // Log progress
+            IF num_steps % log_every == 0:
+                avg_loss = accumulated_loss / num_steps
+                LOG(f"Epoch {epoch_num}, Step {num_steps}: Loss={avg_loss:.4f}, KD={accumulated_kd_loss/num_steps:.4f}, CE={accumulated_ce_loss/num_steps:.4f}")
+        
+        
+        // ===== CHECKPOINTING =====
+        IF num_steps % save_every == 0:
+            SAVE_CHECKPOINT(
+                model=student_model,
+                proj_student=proj_student,
+                proj_teacher=proj_teacher,
+                optimizer=optimizer,
+                epoch=epoch_num,
+                step=num_steps
+            )
+    
+    END FOR
+    
+    RETURN epoch_metrics
+
+
+TrainFullPipeline():
+    FOR epoch IN range(num_epochs):
+        LOG(f"======= EPOCH {epoch} / {num_epochs} =======")
+        
+        epoch_metrics = TrainEpoch(epoch)
+        
+        LOG(f"Epoch {epoch} complete:")
+        LOG(f"  Average Loss: {epoch_metrics['avg_loss']:.4f}")
+        LOG(f"  Average KD Loss: {epoch_metrics['avg_kd_loss']:.4f}")
+        LOG(f"  Average CE Loss: {epoch_metrics['avg_ce_loss']:.4f}")
+        LOG(f"  Training Time: {epoch_metrics['time']:.2f} minutes")
+        
+        SAVE_CHECKPOINT(model, "final.pt")
+    
+    END FOR
+
+
+================================================================================
+7. VALIDATION PHASE
+================================================================================
+
+ValidateStudent(student_model, teacher_model, validation_dataloader):
+    student_model.eval()
+    teacher_model.eval()
+    
+    total_kd_loss = 0
+    total_ce_loss = 0
+    total_cosine_sim = 0
+    num_batches = 0
+    
+    WITH torch.no_grad():
+        FOR EACH batch IN validation_dataloader:
+            input_ids = batch["input_ids"]
+            attention_mask = batch["attention_mask"]
+            
+            // Teacher forward
+            teacher_output = teacher_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True
+            )
+            teacher_hidden = teacher_output.hidden_states[-1]
+            
+            // Student forward
+            student_output = student_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                output_hidden_states=True
+            )
+            student_hidden = student_output.hidden_states[-1]
+            student_logits = student_output.logits
+            
+            // Compute metrics
+            kd_loss, ce_loss = ComputeLosses(...)
+            cosine_sim = COSINE_SIMILARITY(proj_student(student_hidden), proj_teacher(teacher_hidden))
+            
+            total_kd_loss += kd_loss
+            total_ce_loss += ce_loss
+            total_cosine_sim += cosine_sim
+            num_batches += 1
+    
+    RETURN {
+        "kd_loss": total_kd_loss / num_batches,
+        "ce_loss": total_ce_loss / num_batches,
+        "cosine_similarity": total_cosine_sim / num_batches
+    }
+
+
+CompareStudents():
+    // Load base student (untrained)
+    base_student = LOAD_PRETRAINED("Qwen/Qwen1.5-0.5B")
+    base_metrics = ValidateStudent(base_student, teacher_model, val_dataloader)
+    
+    // Load distilled student (trained)
+    distilled_student = LOAD_CHECKPOINT("final.pt")
+    distilled_metrics = ValidateStudent(distilled_student, teacher_model, val_dataloader)
+    
+    // Compare
+    LOG(f"Base Student KD Loss: {base_metrics['kd_loss']:.4f}")
+    LOG(f"Distilled Student KD Loss: {distilled_metrics['kd_loss']:.4f}")
+    LOG(f"Improvement: {(base_metrics['kd_loss'] - distilled_metrics['kd_loss']):.4f}")
+    
+    LOG(f"Base Student Cosine Similarity: {base_metrics['cosine_similarity']:.4f}")
+    LOG(f"Distilled Student Cosine Similarity: {distilled_metrics['cosine_similarity']:.4f}")
+    LOG(f"Improvement: {(distilled_metrics['cosine_similarity'] - base_metrics['cosine_similarity']):.4f}")
+
+
+================================================================================
+8. ENTRY POINT
+================================================================================
+
+Main():
+    // Parse arguments (can override config defaults)
+    args = PARSE_ARGUMENTS()
+    
+    // Load configuration
+    config = LoadConfig()
+    IF args provided:
+        config.update(args)
+    
+    // Setup
+    LOG("Initializing models and data...")
+    teacher_model, student_model, proj_teacher, proj_student, optimizer = InitializeModels()
+    dataset = LoadDataset(config.dataset_file)
+    dataloader = CreateDataLoader(dataset, config.batch_size, config.gradient_accumulation_steps)
+    
+    // Train
+    LOG("Starting training...")
+    TrainFullPipeline()
+    
+    // Validate
+    LOG("Running validation...")
+    val_dataset = LoadDataset(config.validation_file)
+    val_dataloader = CreateDataLoader(val_dataset, batch_size=4)
+    CompareStudents()
+    
+    LOG("Pipeline complete!")
+
+
+================================================================================
+9. DATA LEAKAGE DETECTION
+================================================================================
+
+CheckDataIntegrity(train_file, val_file):
+    train_data = LOAD(train_file)
+    val_data = LOAD(val_file)
+    
+    FOR EACH (q_train, a_train) IN train_data:
+        hash_train = SHA256(q_train + "|" + a_train)
+        ADD hash_train to train_hashes SET
+    
+    FOR EACH (q_val, a_val) IN val_data:
+        hash_val = SHA256(q_val + "|" + a_val)
+        IF hash_val IN train_hashes:
+            LOG("⚠️ DATA LEAKAGE: Validation sample found in training set")
+            RETURN FALSE
+    
+    LOG("✓ PASS: No data leakage detected")
+    RETURN TRUE
+
+
+================================================================================
+10. CHECKPOINT SAVING
+================================================================================
+
+SaveCheckpoint(checkpoint_path):
+    checkpoint = {
+        "epoch": current_epoch,
+        "step": current_step,
+        "student_state_dict": student_model.state_dict(),
+        "proj_student_state_dict": proj_student.state_dict(),
+        "proj_teacher_state_dict": proj_teacher.state_dict(),  // Critical: frozen teacher projection
+        "optimizer_state_dict": optimizer.state_dict(),
+        "config": {
+            "teacher_model_id": teacher_model_id,
+            "student_model_id": student_model_id,
+            "kd_loss_weight": kd_loss_weight,
+            "ce_loss_weight": ce_loss_weight,
+            "common_dim": common_dim
+        }
+    }
+    TORCH.SAVE(checkpoint, checkpoint_path)
+
+
+LoadCheckpoint(checkpoint_path):
+    checkpoint = TORCH.LOAD(checkpoint_path)
+    student_model.load_state_dict(checkpoint["student_state_dict"])
+    proj_student.load_state_dict(checkpoint["proj_student_state_dict"])
+    proj_teacher.load_state_dict(checkpoint["proj_teacher_state_dict"])
+    RETURN student_model, proj_student, proj_teacher
+
+
+================================================================================
+11. COMPLETE TRAINING WORKFLOW
+================================================================================
+
+STEP 1: Prepare Data
+    ├─ Split medicalGuideline_en_qa.json (90k train, 10k val)
+    └─ Check no data leakage with CheckDataIntegrity()
+
+STEP 2: Load Configuration
+    ├─ Read kd_config.py
+    ├─ Set loss weights: KD=0.6, CE=0.4
+    └─ Set hyperparameters: batch_size=1, lr=1e-5, epochs=3
+
+STEP 3: Initialize Pipeline
+    ├─ Load teacher model (Qwen1.5-1.8B) → FROZEN
+    ├─ Load student model (Qwen1.5-0.5B) → TRAINABLE
+    ├─ Create projection layers → hidden_state_dim → common_dim (768)
+    └─ Initialize optimizer (Adafactor)
+
+STEP 4: Training Loop (3 epochs)
+    FOR each epoch:
+        FOR each batch:
+            ├─ Teacher forward (no grad) → teacher_hidden
+            ├─ Student forward (with grad) → student_hidden, logits
+            ├─ Compute KD loss: MSE(proj_student, proj_teacher)
+            ├─ Compute CE loss: CROSS_ENTROPY(logits, labels)
+            ├─ Backward pass (scaled by accumulation)
+            ├─ Optimizer step (every N accumulated steps)
+            └─ Log metrics + save checkpoint every 500 steps
+
+STEP 5: Validation
+    ├─ Load base student (untrained)
+    ├─ Load distilled student (trained checkpoint)
+    ├─ Compute metrics on validation set:
+    │   ├─ KD Loss
+    │   ├─ CE Loss
+    │   └─ Cosine Similarity
+    └─ Compare: distilled should outperform base
+
+STEP 6: Results
+    ├─ Expected: KD loss improves (lower)
+    ├─ Expected: CE loss improves (lower)
+    ├─ Expected: Cosine similarity improves (higher)
+    └─ Save final checkpoint with all weights
+
+
+================================================================================
+12. KEY CONCEPTS
+================================================================================
+
+Knowledge Distillation:
+    • Teacher outputs: Hidden states for distillation
+    • Student learns to mimic teacher's internal representations
+    • Projected to common dimension to allow comparison
+    • MSE loss on pooled hidden states
+
+Loss Weighting:
+    • KD Loss (0.6): Learn teacher's knowledge
+    • CE Loss (0.4): Learn language task directly
+    • Balance: KD dominant but CE prevents task drift
+
+Gradient Accumulation:
+    • Accumulate gradients over N steps before update
+    • Effective batch size = batch_size × accumulation_steps
+    • Here: 1 × 4 = 4 effective batch size
+
+Frozen Teacher:
+    • Teacher weights never updated
+    • Projection weights frozen during training
+    • Only student model learns
+
+Data Separation:
+    • Training: 89,716 samples
+    • Validation: 9,969 samples (different from training)
+    • Prevents data leakage and ensures valid generalization metrics
+
+================================================================================
+END OF PSEUDO CODE
+================================================================================

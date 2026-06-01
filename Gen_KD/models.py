@@ -50,16 +50,22 @@ class ModelWrapper(nn.Module):
 
     def _resolve_base_model_name(self, checkpoint: dict[str, Any]) -> str:
         config = checkpoint.get("config", {}) if isinstance(checkpoint.get("config", {}), dict) else {}
+
+        def _is_checkpoint_path(value: Any) -> bool:
+            if not isinstance(value, str):
+                return False
+            return value.endswith(".pt") or value.endswith(".pth")
+
         candidates = [
-            checkpoint.get("model_name"),
             checkpoint.get("base_model_name"),
             config.get("student_model_id"),
             config.get("teacher_model_id"),
             config.get("model_name"),
             config.get("model_id"),
+            checkpoint.get("model_name"),
         ]
         for candidate in candidates:
-            if candidate:
+            if candidate and not _is_checkpoint_path(candidate):
                 return str(candidate)
         raise KeyError(
             "Could not resolve a base model name from checkpoint. "

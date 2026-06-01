@@ -60,6 +60,10 @@ def _assistant_base_model_id(cfg: GenKDConfig) -> str:
     return "Qwen/Qwen1.5-0.5B"
 
 
+def _assistant_tokenizer_id(cfg: GenKDConfig) -> str:
+    return _assistant_base_model_id(cfg)
+
+
 def _load_batch(cfg: GenKDConfig, tokenizer) -> Dict[str, torch.Tensor]:
     dataset_path = Path(cfg.dataset_path)
     if not dataset_path.exists():
@@ -178,7 +182,7 @@ def main() -> int:
 
     try:
         teacher_tok = load_tokenizer(cfg.model_names[0])
-        assistant_tok = load_tokenizer(cfg.model_names[1])
+        assistant_tok = load_tokenizer(_assistant_tokenizer_id(cfg))
         student_tok = load_tokenizer(cfg.model_names[2])
 
         print("Tokenizer compatibility:")

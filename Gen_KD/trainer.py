@@ -111,7 +111,7 @@ class GenKDTrainer:
         self.summary_path = self.metrics_log_dir / "training_summary.json"
         self._initialize_metric_outputs()
 
-        self.checkpoint_dir = Path(config.checkpoint_dir)
+        self.checkpoint_dir = self.run_output_dir / config.checkpoint_dir
         self.checkpoint_dir.mkdir(
             parents=True,
             exist_ok=True
@@ -551,26 +551,26 @@ class GenKDTrainer:
                         f"KD_T {kd_teacher:.6f} KD_A {kd_assistant:.6f}"
                     )
 
-                    # --------------------------------------------------
-                    # Half-epoch checkpoint
-                    # --------------------------------------------------
+                # --------------------------------------------------
+                # Half-epoch checkpoint
+                # --------------------------------------------------
 
-                    current_step_in_epoch = batch_idx + 1
+                current_step_in_epoch = batch_idx + 1
 
-                    if current_step_in_epoch == half_epoch_step:
+                if current_step_in_epoch == half_epoch_step:
 
-                        checkpoint_path = save_checkpoint(
-                            self.models[student_idx],
-                            self.projections[student_idx],
-                            student_idx,
-                            cfg.checkpoint_dir,
-                            metadata=self._checkpoint_metadata(epoch + 1),
-                            suffix=f"epoch{epoch+1}_half",
-                        )
+                    checkpoint_path = save_checkpoint(
+                        self.models[student_idx],
+                        self.projections[student_idx],
+                        student_idx,
+                        str(self.checkpoint_dir),
+                        metadata=self._checkpoint_metadata(epoch + 1),
+                        suffix=f"epoch{epoch+1}_half",
+                    )
 
-                        self.logger.info(
-                            f"  [Gen {student_idx}] Half-epoch checkpoint saved -> {checkpoint_path}"
-                        )
+                    self.logger.info(
+                        f"  [Gen {student_idx}] Half-epoch checkpoint saved -> {checkpoint_path}"
+                    )
 
             if num_batches == 0:
                 raise RuntimeError(
@@ -582,12 +582,27 @@ class GenKDTrainer:
                 f"  [Gen {student_idx}] Epoch {epoch + 1} complete — Avg loss: {avg_epoch_loss:.6f}"
             )
 
+            # --------------------------------------------------
+            # Full-epoch checkpoint
+            # --------------------------------------------------
+            checkpoint_path = save_checkpoint(
+                self.models[student_idx],
+                self.projections[student_idx],
+                student_idx,
+                str(self.checkpoint_dir),
+                metadata=self._checkpoint_metadata(epoch + 1),
+                suffix=f"epoch{epoch+1}_full",
+            )
+            self.logger.info(
+                f"  [Gen {student_idx}] Full-epoch checkpoint saved -> {checkpoint_path}"
+            )
+
         self.models[student_idx].freeze()
         checkpoint_path = save_checkpoint(
             self.models[student_idx],
             self.projections[student_idx],
             student_idx,
-            cfg.checkpoint_dir,
+            str(self.checkpoint_dir),
             metadata=self._checkpoint_metadata(last_epoch),
             suffix="final",
         )

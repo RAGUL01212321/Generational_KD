@@ -103,17 +103,39 @@ class GenKDTrainer:
         self.train_metric_rows: list[dict[str, float | int]] = []
         self.gradient_metric_rows: list[dict[str, float | int]] = []
 
-        self.metrics_log_dir = Path(config.metrics_log_dir)
-        self.plots_dir = Path(config.plots_dir)
+        self.run_output_dir = self._next_run_output_dir()
+        self.metrics_log_dir = self.run_output_dir / config.metrics_log_dir
+        self.plots_dir = self.run_output_dir / config.plots_dir
         self.train_metrics_path = self.metrics_log_dir / "train_metrics.csv"
         self.gradient_metrics_path = self.metrics_log_dir / "gradient_metrics.csv"
         self.summary_path = self.metrics_log_dir / "training_summary.json"
         self._initialize_metric_outputs()
 
+    def _next_run_output_dir(self) -> Path:
+        """Return the next GenN_run directory for this training launch."""
+        run_root = Path(self.config.run_output_root)
+        generation_name = f"Gen{len(self.models) - 1}"
+        run_root.mkdir(parents=True, exist_ok=True)
+
+        max_run = 0
+        for path in run_root.iterdir():
+            if not path.is_dir() or not path.name.startswith(f"{generation_name}_"):
+                continue
+            suffix = path.name[len(generation_name) + 1:]
+            if suffix.isdigit():
+                max_run = max(max_run, int(suffix))
+
+        return run_root / f"{generation_name}_{max_run + 1}"
+
     def _initialize_metric_outputs(self) -> None:
         """Create CSV files with headers before training starts."""
+        self.run_output_dir.mkdir(parents=True, exist_ok=False)
         self.metrics_log_dir.mkdir(parents=True, exist_ok=True)
         self.plots_dir.mkdir(parents=True, exist_ok=True)
+        self.logger.info(f"Run outputs  : {self.run_output_dir}")
+        self.logger.info(f"Metrics CSV  : {self.train_metrics_path}")
+        self.logger.info(f"Gradient CSV : {self.gradient_metrics_path}")
+        self.logger.info(f"Plots dir    : {self.plots_dir}")
 
         with self.train_metrics_path.open("w", newline="") as f:
             writer = csv.writer(f)
@@ -506,9 +528,19 @@ class GenKDTrainer:
                 if self.global_step % cfg.log_every == 0:
                     self._write_train_metrics(epoch + 1)
                     avg = epoch_loss / max(num_batches, 1)
+                    kd_loss = self._tensor_to_float(self.last_step_metrics["kd_loss"])
+                    ce_loss = self._tensor_to_float(self.last_step_metrics["ce_loss"])
+                    kd_teacher = self._tensor_to_float(
+                        self.last_step_metrics["kd_teacher"]
+                    )
+                    kd_assistant = self._tensor_to_float(
+                        self.last_step_metrics["kd_assistant"]
+                    )
                     self.logger.info(
                         f"  [Gen {student_idx}] Epoch {epoch + 1}/{cfg.epochs} "
-                        f"Step {self.global_step} Loss {avg:.6f}"
+                        f"Step {self.global_step} AvgLoss {avg:.6f} "
+                        f"KD {kd_loss:.6f} CE {ce_loss:.6f} "
+                        f"KD_T {kd_teacher:.6f} KD_A {kd_assistant:.6f}"
                     )
 
             if num_batches == 0:

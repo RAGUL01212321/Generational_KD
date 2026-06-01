@@ -63,6 +63,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--gradient-log-every", type=int, default=250)
     p.add_argument("--metrics-log-dir", default="logs")
     p.add_argument("--plots-dir", default="plots")
+    p.add_argument("--run-output-root", default=".")
 
     # Debug
     p.add_argument(
@@ -101,6 +102,7 @@ def build_config(args: argparse.Namespace) -> GenKDConfig:
         gradient_log_every=args.gradient_log_every,
         metrics_log_dir=args.metrics_log_dir,
         plots_dir=args.plots_dir,
+        run_output_root=args.run_output_root,
     )
 
     if args.models:
@@ -190,6 +192,7 @@ def main():
     logger.info(f"  Dataset path : {cfg.dataset_path}")
     logger.info(f"  Metrics dir  : {cfg.metrics_log_dir}")
     logger.info(f"  Plots dir    : {cfg.plots_dir}")
+    logger.info(f"  Run root     : {cfg.run_output_root}")
     logger.info(
         "  Loss         : "
         f"kd={cfg.kd_loss_weight} * mean(MSE(student, teacher), MSE(student, assistant)) "

@@ -81,6 +81,7 @@ class GenKDConfig:
     gradient_log_every: int = 250
     metrics_log_dir: str = "logs"
     plots_dir: str = "plots"
+    run_output_root: str = "."
 
     @property
     def num_generations(self) -> int:

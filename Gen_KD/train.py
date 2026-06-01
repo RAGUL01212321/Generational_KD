@@ -60,6 +60,9 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--device", default=None, help="auto-detect if not set")
     p.add_argument("--checkpoint-dir", default="kd_checkpoints")
     p.add_argument("--log-every", type=int, default=50)
+    p.add_argument("--gradient-log-every", type=int, default=250)
+    p.add_argument("--metrics-log-dir", default="logs")
+    p.add_argument("--plots-dir", default="plots")
 
     # Debug
     p.add_argument(
@@ -95,6 +98,9 @@ def build_config(args: argparse.Namespace) -> GenKDConfig:
         device=device,
         checkpoint_dir=args.checkpoint_dir,
         log_every=args.log_every,
+        gradient_log_every=args.gradient_log_every,
+        metrics_log_dir=args.metrics_log_dir,
+        plots_dir=args.plots_dir,
     )
 
     if args.models:
@@ -182,6 +188,8 @@ def main():
     logger.info(f"  Common dim   : {cfg.common_dim}")
     logger.info(f"  Pooling      : {cfg.pooling_mode}")
     logger.info(f"  Dataset path : {cfg.dataset_path}")
+    logger.info(f"  Metrics dir  : {cfg.metrics_log_dir}")
+    logger.info(f"  Plots dir    : {cfg.plots_dir}")
     logger.info(
         "  Loss         : "
         f"kd={cfg.kd_loss_weight} * mean(MSE(student, teacher), MSE(student, assistant)) "

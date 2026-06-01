@@ -26,6 +26,11 @@ and generational distillation flow:
 
 from __future__ import annotations
 
+import csv
+import json
+import math
+import time
+from pathlib import Path
 from typing import Optional
 
 import torch
@@ -91,6 +96,51 @@ class GenKDTrainer:
 
         self.mse = nn.MSELoss()
         self.optimizer: Optional[Adafactor] = None
+        self.global_step = 0
+        self.total_optimizer_updates = 0
+        self.training_start_time = 0.0
+        self.last_step_metrics: dict[str, torch.Tensor | float | int] = {}
+        self.train_metric_rows: list[dict[str, float | int]] = []
+        self.gradient_metric_rows: list[dict[str, float | int]] = []
+
+        self.metrics_log_dir = Path(config.metrics_log_dir)
+        self.plots_dir = Path(config.plots_dir)
+        self.train_metrics_path = self.metrics_log_dir / "train_metrics.csv"
+        self.gradient_metrics_path = self.metrics_log_dir / "gradient_metrics.csv"
+        self.summary_path = self.metrics_log_dir / "training_summary.json"
+        self._initialize_metric_outputs()
+
+    def _initialize_metric_outputs(self) -> None:
+        """Create CSV files with headers before training starts."""
+        self.metrics_log_dir.mkdir(parents=True, exist_ok=True)
+        self.plots_dir.mkdir(parents=True, exist_ok=True)
+
+        with self.train_metrics_path.open("w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "step",
+                    "epoch",
+                    "total_loss",
+                    "kd_loss",
+                    "kd_teacher",
+                    "kd_assistant",
+                    "ce_loss",
+                    "learning_rate",
+                ]
+            )
+
+        with self.gradient_metrics_path.open("w", newline="") as f:
+            writer = csv.writer(f)
+            writer.writerow(
+                [
+                    "step",
+                    "projection_grad_norm",
+                    "first_layer_grad_norm",
+                    "middle_layer_grad_norm",
+                    "last_layer_grad_norm",
+                ]
+            )
 
     def _validate_hidden_dims(self) -> None:
         """Verify model hidden sizes before creating projection heads."""
@@ -140,8 +190,233 @@ class GenKDTrainer:
                 incompatible.unexpected_keys,
             )
 
+    def _tensor_to_float(self, value: torch.Tensor | float | int) -> float:
+        if isinstance(value, torch.Tensor):
+            return float(value.detach().float().cpu().item())
+        return float(value)
+
+    def _current_learning_rate(self) -> float:
+        if self.optimizer is None or not self.optimizer.param_groups:
+            return 0.0
+        return float(self.optimizer.param_groups[0].get("lr", 0.0))
+
+    def _write_train_metrics(self, epoch: int) -> None:
+        """Append one scalar metrics row. Called only at logging intervals."""
+        if not self.last_step_metrics:
+            return
+
+        row = {
+            "step": self.global_step,
+            "epoch": epoch,
+            "total_loss": self._tensor_to_float(self.last_step_metrics["total_loss"]),
+            "kd_loss": self._tensor_to_float(self.last_step_metrics["kd_loss"]),
+            "kd_teacher": self._tensor_to_float(self.last_step_metrics["kd_teacher"]),
+            "kd_assistant": self._tensor_to_float(self.last_step_metrics["kd_assistant"]),
+            "ce_loss": self._tensor_to_float(self.last_step_metrics["ce_loss"]),
+            "learning_rate": self._current_learning_rate(),
+        }
+        self.train_metric_rows.append(row)
+
+        with self.train_metrics_path.open("a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+            writer.writerow(row)
+
+    def _parameter_grad_norm(self, parameters) -> float:
+        squared_norm = 0.0
+        found_grad = False
+        for param in parameters:
+            if param.grad is None:
+                continue
+            found_grad = True
+            grad = param.grad.detach().float()
+            squared_norm += float(torch.sum(grad * grad).cpu().item())
+        if not found_grad:
+            return 0.0
+        return math.sqrt(squared_norm)
+
+    def _get_transformer_layers(self, student_idx: int) -> list[nn.Module]:
+        model = self.models[student_idx].model
+        candidates = [
+            ("model", "layers"),
+            ("transformer", "h"),
+            ("gpt_neox", "layers"),
+            ("backbone", "layers"),
+        ]
+        for first_attr, second_attr in candidates:
+            parent = getattr(model, first_attr, None)
+            layers = getattr(parent, second_attr, None) if parent is not None else None
+            if layers is not None and len(layers) > 0:
+                return list(layers)
+
+        layers = getattr(model, "layers", None)
+        if layers is not None and len(layers) > 0:
+            return list(layers)
+        return []
+
+    def _write_gradient_metrics(self, student_idx: int) -> None:
+        """Append lightweight gradient norms using existing gradients only."""
+        projection_grad_norm = self._parameter_grad_norm(
+            self.projections[student_idx].parameters()
+        )
+
+        layers = self._get_transformer_layers(student_idx)
+        if layers:
+            first_layer = layers[0]
+            middle_layer = layers[len(layers) // 2]
+            last_layer = layers[-1]
+            first_norm = self._parameter_grad_norm(first_layer.parameters())
+            middle_norm = self._parameter_grad_norm(middle_layer.parameters())
+            last_norm = self._parameter_grad_norm(last_layer.parameters())
+        else:
+            first_norm = middle_norm = last_norm = 0.0
+
+        row = {
+            "step": self.global_step,
+            "projection_grad_norm": projection_grad_norm,
+            "first_layer_grad_norm": first_norm,
+            "middle_layer_grad_norm": middle_norm,
+            "last_layer_grad_norm": last_norm,
+        }
+        self.gradient_metric_rows.append(row)
+
+        with self.gradient_metrics_path.open("a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=list(row.keys()))
+            writer.writerow(row)
+
+    def _checkpoint_metadata(self, epoch: int) -> dict[str, float | int]:
+        if not self.last_step_metrics:
+            return {"step": self.global_step, "epoch": epoch}
+        return {
+            "step": self.global_step,
+            "epoch": epoch,
+            "total_loss": self._tensor_to_float(self.last_step_metrics["total_loss"]),
+            "kd_loss": self._tensor_to_float(self.last_step_metrics["kd_loss"]),
+            "ce_loss": self._tensor_to_float(self.last_step_metrics["ce_loss"]),
+            "kd_teacher": self._tensor_to_float(self.last_step_metrics["kd_teacher"]),
+            "kd_assistant": self._tensor_to_float(self.last_step_metrics["kd_assistant"]),
+        }
+
+    def _write_training_summary(self) -> None:
+        elapsed = time.perf_counter() - self.training_start_time
+        final_metrics = self._checkpoint_metadata(epoch=self.config.epochs)
+
+        if self.train_metric_rows:
+            min_total_loss = min(row["total_loss"] for row in self.train_metric_rows)
+            min_kd_loss = min(row["kd_loss"] for row in self.train_metric_rows)
+            min_ce_loss = min(row["ce_loss"] for row in self.train_metric_rows)
+        else:
+            min_total_loss = final_metrics.get("total_loss", 0.0)
+            min_kd_loss = final_metrics.get("kd_loss", 0.0)
+            min_ce_loss = final_metrics.get("ce_loss", 0.0)
+
+        summary = {
+            "total_training_steps": self.global_step,
+            "total_optimizer_updates": self.total_optimizer_updates,
+            "total_epochs": self.config.epochs,
+            "final_total_loss": final_metrics.get("total_loss", 0.0),
+            "final_kd_loss": final_metrics.get("kd_loss", 0.0),
+            "final_ce_loss": final_metrics.get("ce_loss", 0.0),
+            "minimum_total_loss": min_total_loss,
+            "minimum_kd_loss": min_kd_loss,
+            "minimum_ce_loss": min_ce_loss,
+            "total_training_time_seconds": elapsed,
+        }
+
+        with self.summary_path.open("w") as f:
+            json.dump(summary, f, indent=2)
+
+    def _plot_metric(
+        self,
+        rows: list[dict[str, float | int]],
+        y_keys: list[str],
+        title: str,
+        ylabel: str,
+        output_name: str,
+    ) -> None:
+        import matplotlib.pyplot as plt
+
+        fig, ax = plt.subplots(figsize=(10, 6), dpi=150)
+        if rows:
+            steps = [row["step"] for row in rows]
+            for y_key in y_keys:
+                ax.plot(steps, [row[y_key] for row in rows], label=y_key, linewidth=1.8)
+            ax.legend()
+        else:
+            ax.text(0.5, 0.5, "No logged data", ha="center", va="center")
+
+        ax.set_title(title)
+        ax.set_xlabel("Step")
+        ax.set_ylabel(ylabel)
+        ax.grid(True, alpha=0.35)
+        fig.tight_layout()
+        fig.savefig(self.plots_dir / output_name)
+        plt.close(fig)
+
+    def _generate_plots(self) -> None:
+        self._plot_metric(
+            self.train_metric_rows,
+            ["total_loss"],
+            "Total Loss vs Step",
+            "Total Loss",
+            "total_loss_vs_step.png",
+        )
+        self._plot_metric(
+            self.train_metric_rows,
+            ["kd_loss"],
+            "KD Loss vs Step",
+            "KD Loss",
+            "kd_loss_vs_step.png",
+        )
+        self._plot_metric(
+            self.train_metric_rows,
+            ["ce_loss"],
+            "CE Loss vs Step",
+            "CE Loss",
+            "ce_loss_vs_step.png",
+        )
+        self._plot_metric(
+            self.train_metric_rows,
+            ["kd_teacher"],
+            "Teacher KD Loss vs Step",
+            "Teacher KD Loss",
+            "kd_teacher_vs_step.png",
+        )
+        self._plot_metric(
+            self.train_metric_rows,
+            ["kd_assistant"],
+            "Assistant KD Loss vs Step",
+            "Assistant KD Loss",
+            "kd_assistant_vs_step.png",
+        )
+        self._plot_metric(
+            self.train_metric_rows,
+            ["kd_loss", "ce_loss"],
+            "KD vs CE Loss Comparison",
+            "Loss",
+            "kd_vs_ce_comparison.png",
+        )
+        self._plot_metric(
+            self.gradient_metric_rows,
+            ["projection_grad_norm"],
+            "Projection Gradient Norm",
+            "Gradient Norm",
+            "projection_grad_norm.png",
+        )
+        self._plot_metric(
+            self.gradient_metric_rows,
+            [
+                "first_layer_grad_norm",
+                "middle_layer_grad_norm",
+                "last_layer_grad_norm",
+            ],
+            "Transformer Layer Gradient Norms",
+            "Gradient Norm",
+            "transformer_grad_norms.png",
+        )
+
     def train(self) -> None:
         """Run the full generational distillation pipeline."""
+        self.training_start_time = time.perf_counter()
         self.models[0].freeze()
         self.projections[0].eval()
         for param in self.projections[0].parameters():
@@ -152,6 +427,8 @@ class GenKDTrainer:
         for student_idx in range(2, len(self.models)):
             self._train_generation(student_idx)
 
+        self._write_training_summary()
+        self._generate_plots()
         self.logger.info("All generations trained ✓")
 
     def _train_generation(self, student_idx: int) -> None:
@@ -195,10 +472,11 @@ class GenKDTrainer:
             )
         )
 
-        global_step = 0
         accumulation_steps = max(1, cfg.gradient_accumulation_steps)
+        last_epoch = 0
 
         for epoch in range(cfg.epochs):
+            last_epoch = epoch + 1
             epoch_loss = 0.0
             num_batches = 0
             self.optimizer.zero_grad(set_to_none=True)
@@ -207,7 +485,7 @@ class GenKDTrainer:
                 loss = self._train_step(0, assistant_idx, student_idx, batch)
                 if not torch.isfinite(loss):
                     self.logger.warning(
-                        f"  [Gen {student_idx}] Skipping non-finite batch at step {global_step + 1}"
+                        f"  [Gen {student_idx}] Skipping non-finite batch at step {self.global_step + 1}"
                     )
                     self.optimizer.zero_grad(set_to_none=True)
                     continue
@@ -215,17 +493,22 @@ class GenKDTrainer:
                 (loss / accumulation_steps).backward()
                 epoch_loss += loss.item()
                 num_batches += 1
-                global_step += 1
+                self.global_step += 1
 
-                if global_step % accumulation_steps == 0:
+                if cfg.gradient_log_every > 0 and self.global_step % cfg.gradient_log_every == 0:
+                    self._write_gradient_metrics(student_idx)
+
+                if self.global_step % accumulation_steps == 0:
                     self.optimizer.step()
                     self.optimizer.zero_grad(set_to_none=True)
+                    self.total_optimizer_updates += 1
 
-                if global_step % cfg.log_every == 0:
+                if self.global_step % cfg.log_every == 0:
+                    self._write_train_metrics(epoch + 1)
                     avg = epoch_loss / max(num_batches, 1)
                     self.logger.info(
                         f"  [Gen {student_idx}] Epoch {epoch + 1}/{cfg.epochs} "
-                        f"Step {global_step} Loss {avg:.6f}"
+                        f"Step {self.global_step} Loss {avg:.6f}"
                     )
 
             if num_batches == 0:
@@ -244,6 +527,7 @@ class GenKDTrainer:
             self.projections[student_idx],
             student_idx,
             cfg.checkpoint_dir,
+            metadata=self._checkpoint_metadata(last_epoch),
         )
         self.logger.info(f"  Checkpoint saved → {checkpoint_path}")
 
@@ -313,4 +597,13 @@ class GenKDTrainer:
         if loss_ce is None:
             loss_ce = torch.tensor(0.0, device=device)
 
-        return self.config.kd_loss_weight * loss_kd + self.config.ce_loss_weight * loss_ce
+        total_loss = self.config.kd_loss_weight * loss_kd + self.config.ce_loss_weight * loss_ce
+        self.last_step_metrics = {
+            "total_loss": total_loss.detach(),
+            "kd_loss": loss_kd.detach(),
+            "kd_teacher": kd_teacher.detach(),
+            "kd_assistant": kd_assistant.detach(),
+            "ce_loss": loss_ce.detach(),
+        }
+
+        return total_loss

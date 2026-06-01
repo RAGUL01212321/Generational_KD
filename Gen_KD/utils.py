@@ -51,6 +51,7 @@ def save_checkpoint(
     projection: torch.nn.Module,
     generation: int,
     checkpoint_dir: str,
+    metadata: dict | None = None,
 ) -> str:
     """Save model + projection checkpoint for a given generation.
 
@@ -68,17 +69,18 @@ def save_checkpoint(
 
     model_state_dict = model.model.state_dict() if hasattr(model, "model") else model.state_dict()
     projection_state_dict = projection.state_dict()
-    torch.save(
-        {
-            "generation": generation,
-            "model_name": getattr(model, "model_name", None),
-            "student_state_dict": model_state_dict,
-            "model_state_dict": model_state_dict,
-            "proj_student_state_dict": projection_state_dict,
-            "projection_state_dict": projection_state_dict,
-        },
-        path,
-    )
+    checkpoint = {
+        "generation": generation,
+        "model_name": getattr(model, "model_name", None),
+        "student_state_dict": model_state_dict,
+        "model_state_dict": model_state_dict,
+        "proj_student_state_dict": projection_state_dict,
+        "projection_state_dict": projection_state_dict,
+    }
+    if metadata is not None:
+        checkpoint["metadata"] = metadata
+
+    torch.save(checkpoint, path)
     return path
 
 

@@ -78,6 +78,9 @@ class GenKDConfig:
     device: str = "cuda"
     checkpoint_dir: str = "kd_checkpoints"
     log_every: int = 50
+    gradient_log_every: int = 250
+    metrics_log_dir: str = "logs"
+    plots_dir: str = "plots"
 
     @property
     def num_generations(self) -> int:

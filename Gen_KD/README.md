@@ -92,7 +92,7 @@ python -m Gen_KD.train --models "Qwen/Qwen1.5-1.8B" "/Hikigai/Gen_KD/kd_pipeline
 The default dataset path is:
 
 ```text
-/Hikigai/Gen_KD/Dataset/ApolloCorpus/pretrain/medicalGuideline_en_qa_90k.json
+./Dataset/ApolloCorpus/pretrain/medicalGuideline_en_qa_90k.json
 ```
 
 If that file is not present, the CLI falls back to the configured HuggingFace dataset.

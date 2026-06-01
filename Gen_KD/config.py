@@ -24,7 +24,7 @@ class GenKDConfig:
         pooling_mode: Pooling strategy: "mean" or "cls".
         device:      Device string, e.g. "cuda" or "cpu".
         checkpoint_dir: Directory to save per-generation checkpoints.
-        dataset_path: Local JSON dataset path on the server, if using a file.
+        dataset_path: Local JSON dataset path, relative to the repo root if using a file.
         dataset_name: HuggingFace dataset name for training data.
         dataset_split: Which split to use (e.g. "train").
         dataset_text_field: Name of the text column in the dataset.
@@ -67,7 +67,7 @@ class GenKDConfig:
     ce_loss_weight: float = 0.4
 
     # --- Dataset ---
-    dataset_path: str = "/Hikigai/Gen_KD/Dataset/ApolloCorpus/pretrain/medicalGuideline_en_qa_90k.json"
+    dataset_path: str = "./Dataset/ApolloCorpus/pretrain/medicalGuideline_en_qa_90k.json"
     dataset_name: str = "wikitext"
     dataset_config: str = "wikitext-2-raw-v1"
     dataset_split: str = "train"

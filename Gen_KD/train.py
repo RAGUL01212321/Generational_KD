@@ -47,8 +47,8 @@ def parse_args() -> argparse.Namespace:
     # Dataset
     p.add_argument(
         "--dataset-path",
-        default="/Hikigai/Gen_KD/Dataset/ApolloCorpus/pretrain/medicalGuideline_en_qa_90k.json",
-        help="Local JSON dataset path on the server; if present, this is loaded directly.",
+        default="./Dataset/ApolloCorpus/pretrain/medicalGuideline_en_qa_90k.json",
+        help="Local JSON dataset path relative to the repo root; if present, this is loaded directly.",
     )
     p.add_argument("--dataset", default="wikitext")
     p.add_argument("--dataset-config", default="wikitext-2-raw-v1")

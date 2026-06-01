@@ -1,81 +1,130 @@
-# Gen_KD — Generational Knowledge Distillation
+# Gen_KD - Teacher / Assistant / Student KD
 
-A PyTorch implementation of **Generational Knowledge Distillation**, where a frozen teacher model and N student models are trained **sequentially** — each student distills knowledge from **all** preceding models (teacher + earlier students).
+This folder implements the KD recipe:
 
-## Algorithm Overview
+- Teacher: `Qwen/Qwen1.5-1.8B`, frozen
+- Assistant: distilled Qwen 0.5B checkpoint, frozen
+- Student: `HuggingFaceTB/SmolLM2-360M`, trainable
+- Common projection dimension: `768`
+- Teacher and assistant KD losses are averaged
+- Total loss: `0.6 * loss_kd + 0.4 * loss_ce`
 
-```
-For k = 1 to N:                             # each student generation
-    Freeze all predecessors M[0..k-1]
-    For each batch x:
-        H_prev[i] = M[i](x)      (no grad)  # forward predecessors
-        H_k       = M[k](x)      (grad)     # forward student
+## Algorithm
 
-        p_prev[i] = pool(P[i](H_prev[i]))   # project + pool predecessors
-        p_k       = pool(P[k](H_k))         # project + pool student
+```python
+Teacher = Qwen1.5B          # frozen
+Assistant = DistilledQwen0.5B # frozen
+Student = SmolLM2_360M      # trainable
 
-        loss = Σ w[k][i] · MSE(p_k, p_prev[i])
-        loss.backward()
-        update(M[k], P[k])                  # only update current student
+P_T = Linear(2048, 768)
+P_A = Linear(1024, 768)
+P_S = Linear(960, 768)
+
+freeze(Teacher)
+freeze(Assistant)
+
+for batch in dataloader:
+    input_ids = batch["input_ids"]
+    attention_mask = batch["attention_mask"]
+    labels = input_ids.masked_fill(attention_mask == 0, -100)
+
+    with torch.no_grad():
+        H_T = Teacher(input_ids, output_hidden_states=True).hidden_states[-1]
+        H_A = Assistant(input_ids, output_hidden_states=True).hidden_states[-1]
+
+        Z_T = P_T(H_T)
+        Z_A = P_A(H_A)
+
+        p_T = mean_pool(Z_T, attention_mask)
+        p_A = mean_pool(Z_A, attention_mask)
+
+    out_S = Student(input_ids, labels=labels, output_hidden_states=True)
+    H_S = out_S.hidden_states[-1]
+
+    Z_S = P_S(H_S)
+    p_S = mean_pool(Z_S, attention_mask)
+
+    kd_teacher = MSE(p_S, p_T)
+    kd_assistant = MSE(p_S, p_A)
+    loss_kd = (kd_teacher + kd_assistant) / 2
+
+    loss = 0.6 * loss_kd + 0.4 * out_S.loss
+
+    optimizer.zero_grad()
+    loss.backward()
+    optimizer.step()
 ```
 
 ## Project Structure
 
-```
+```text
 Gen_KD/
-├── __init__.py        # Package init
-├── config.py          # GenKDConfig dataclass
-├── models.py          # ModelWrapper (HuggingFace model loader)
-├── projection.py      # ProjectionHead + pooling utilities
-├── trainer.py         # GenKDTrainer (core training loop)
-├── utils.py           # Logging, seeds, checkpointing
-├── train.py           # CLI entry point
-├── requirements.txt   # Python dependencies
-└── README.md          # This file
+|-- __init__.py
+|-- config.py
+|-- models.py
+|-- projection.py
+|-- trainer.py
+|-- utils.py
+|-- train.py
+|-- requirements.txt
+`-- README.md
 ```
 
 ## Quick Start
 
-### 1. Install dependencies
-
 ```bash
 pip install -r Gen_KD/requirements.txt
+python -m Gen_KD.train
 ```
 
-### 2. Run a dry-run (tiny models, 1 batch)
+Pre-training verification:
 
 ```bash
-cd /home/ragul/Desktop/Generational_distillation
-python -m Gen_KD.train --dry-run
+python -m Gen_KD.verify_pipeline
 ```
 
-### 3. Run with custom models
+To override models:
 
 ```bash
-python -m Gen_KD.train \
-    --models gpt2 gpt2 gpt2 \
-    --epochs 5 \
-    --batch-size 16 \
-    --lr 3e-5 \
-    --common-dim 512
+python -m Gen_KD.train --models "Qwen/Qwen1.5-1.8B" "/Hikigai/Gen_KD/kd_pipeline/kd_checkpoints/Qwen_3/final.pt" "HuggingFaceTB/SmolLM2-360M"
 ```
 
-## CLI Arguments
+The default dataset path is:
 
-| Argument            | Default                  | Description                              |
-|---------------------|--------------------------|------------------------------------------|
-| `--models`          | 3× `sshleifer/tiny-gpt2` | HF model names (teacher + students)     |
-| `--common-dim`      | `256`                    | Shared projection dimension              |
-| `--lr`              | `5e-5`                   | Learning rate                            |
-| `--batch-size`      | `8`                      | Batch size                               |
-| `--max-seq-len`     | `128`                    | Max sequence length                      |
-| `--epochs`          | `3`                      | Epochs per generation                    |
-| `--pooling`         | `mean`                   | Pooling mode (`mean` / `cls`)            |
-| `--weight-strategy` | `uniform`                | Loss weight schedule                     |
-| `--dataset`         | `wikitext`               | HuggingFace dataset name                 |
-| `--dry-run`         | `false`                  | Run 1 batch per gen for testing          |
+```text
+/Hikigai/Gen_KD/Dataset/ApolloCorpus/pretrain/medicalGuideline_en_qa_90k.json
+```
 
-## Loss Weight Strategies
+If that file is not present, the CLI falls back to the configured HuggingFace dataset.
 
-- **`uniform`**: Each predecessor contributes equally: `w[i] = 1/k`
-- **`linear_decay`**: More recent predecessors get higher weight: `w[i] = (i+1) / Σ(1..k)`
+## Key Arguments
+
+| Argument | Default | Description |
+| --- | --- | --- |
+| `--models` | configured teacher/assistant/student trio | Model names or checkpoint paths |
+| `--common-dim` | `768` | Shared projection dimension |
+| `--lr` | `1e-5` | Learning rate |
+| `--batch-size` | `2` | Training batch size |
+| `--max-seq-len` | `512` | Tokenized sequence length |
+| `--epochs` | `3` | Student training epochs |
+| `--pooling` | `mean` | Pooling mode (`mean` or `cls`) |
+| `--kd-loss-weight` | `0.6` | Weight for averaged KD loss |
+| `--ce-loss-weight` | `0.4` | Weight for causal LM CE loss |
+| `--dataset-path` | server Apollo JSON path | Local JSON dataset path |
+| `--dry-run` | `false` | Uses 2 samples and 1 epoch for a quick check |
+
+## Hidden-Dimension Check
+
+The trainer validates the loaded model hidden sizes before creating projections:
+
+```python
+[2048, 1024, 960]
+```
+
+This ensures the projections are exactly:
+
+```python
+P_T = Linear(2048, 768)
+P_A = Linear(1024, 768)
+P_S = Linear(960, 768)
+```

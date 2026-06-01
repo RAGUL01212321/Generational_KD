@@ -13,17 +13,12 @@ class ProjectionHead(nn.Module):
     shared `common_dim` so that representations from different-sized
     models can be compared via MSE.
 
-    Architecture:  Linear → LayerNorm → GELU → Linear
+    Architecture: Linear(input_dim, common_dim)
     """
 
     def __init__(self, input_dim: int, common_dim: int):
         super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, common_dim),
-            nn.LayerNorm(common_dim),
-            nn.GELU(),
-            nn.Linear(common_dim, common_dim),
-        )
+        self.linear = nn.Linear(input_dim, common_dim)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Project hidden states.
@@ -34,7 +29,7 @@ class ProjectionHead(nn.Module):
         Returns:
             (batch, seq_len, common_dim)
         """
-        return self.net(x)
+        return self.linear(x)
 
 
 # ---------------------------------------------------------------------- #

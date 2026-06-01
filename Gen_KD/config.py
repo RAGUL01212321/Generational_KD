@@ -12,16 +12,19 @@ class GenKDConfig:
 
     Attributes:
         model_names: List of HuggingFace model names/paths.
-                     model_names[0] = teacher, model_names[1..N] = students.
+                     model_names[0] = teacher, model_names[1] = assistant,
+                     model_names[2] = student.
+        expected_hidden_dims: Expected hidden sizes for teacher, assistant,
+                     and student. Set to None to disable validation.
         common_dim:  Dimension of the shared projection space.
         learning_rate: Learning rate for each student generation.
         batch_size:  Training batch size.
         max_seq_len: Maximum sequence length for tokenization.
         epochs:      Number of epochs per generation.
-        pooling_mode: Pooling strategy — "mean" or "attention".
-        weight_strategy: How to compute loss weights — "uniform" or "linear_decay".
+        pooling_mode: Pooling strategy: "mean" or "cls".
         device:      Device string, e.g. "cuda" or "cpu".
         checkpoint_dir: Directory to save per-generation checkpoints.
+        dataset_path: Local JSON dataset path on the server, if using a file.
         dataset_name: HuggingFace dataset name for training data.
         dataset_split: Which split to use (e.g. "train").
         dataset_text_field: Name of the text column in the dataset.
@@ -34,28 +37,37 @@ class GenKDConfig:
 
     # --- Models ---
     model_names: List[str] = field(default_factory=lambda: [
-        "sshleifer/tiny-gpt2",   # Teacher (M[0])
-        "sshleifer/tiny-gpt2",   # Student 1 (M[1])
-        "sshleifer/tiny-gpt2",   # Student 2 (M[2])
+        "Qwen/Qwen1.5-1.8B",  # Teacher (M[0])
+        "/Hikigai/Gen_KD/kd_pipeline/kd_checkpoints/Qwen_3/final.pt",  # Assistant (M[1])
+        "HuggingFaceTB/SmolLM2-360M",  # Student (M[2])
+    ])
+    expected_hidden_dims: Optional[List[int]] = field(default_factory=lambda: [
+        2048,  # Qwen teacher
+        1024,  # Distilled Qwen assistant
+        960,   # SmolLM2-360M student
     ])
 
     # --- Projection ---
-    common_dim: int = 256
+    common_dim: int = 768
 
     # --- Training ---
-    learning_rate: float = 5e-5
-    batch_size: int = 8
-    max_seq_len: int = 128
+    optimizer: str = "adafactor"
+    learning_rate: float = 1e-5
+    weight_decay: float = 0.0
+    batch_size: int = 2
+    max_seq_len: int = 512
     epochs: int = 3
-    gradient_accumulation_steps: int = 1
-    warmup_steps: int = 100
+    gradient_accumulation_steps: int = 8
+    warmup_steps: int = 500
     seed: int = 42
 
     # --- Pooling & Loss ---
-    pooling_mode: str = "mean"           # "mean" | "attention"
-    weight_strategy: str = "uniform"     # "uniform" | "linear_decay"
+    pooling_mode: str = "mean"           # "mean" | "cls"
+    kd_loss_weight: float = 0.6
+    ce_loss_weight: float = 0.4
 
     # --- Dataset ---
+    dataset_path: str = "/Hikigai/Gen_KD/Dataset/ApolloCorpus/pretrain/medicalGuideline_en_qa_90k.json"
     dataset_name: str = "wikitext"
     dataset_config: str = "wikitext-2-raw-v1"
     dataset_split: str = "train"
@@ -64,31 +76,10 @@ class GenKDConfig:
 
     # --- I/O ---
     device: str = "cuda"
-    checkpoint_dir: str = "checkpoints"
+    checkpoint_dir: str = "kd_checkpoints"
     log_every: int = 50
 
     @property
     def num_generations(self) -> int:
-        """Number of student generations (excludes the teacher)."""
-        return len(self.model_names) - 1
-
-    def get_loss_weights(self, generation_k: int) -> List[float]:
-        """Return the loss weights w[k][0..k-1] for student generation k.
-
-        Args:
-            generation_k: The 1-based generation index of the current student.
-
-        Returns:
-            A list of floats of length k, one weight per predecessor.
-        """
-        if self.weight_strategy == "uniform":
-            return [1.0 / generation_k] * generation_k
-
-        elif self.weight_strategy == "linear_decay":
-            # More recent predecessors get higher weight.
-            # w[i] = (i+1) / sum(1..k)
-            total = sum(range(1, generation_k + 1))
-            return [(i + 1) / total for i in range(generation_k)]
-
-        else:
-            raise ValueError(f"Unknown weight_strategy: {self.weight_strategy}")
+        """Number of trainable student generations (teacher + assistant excluded)."""
+        return max(0, len(self.model_names) - 2)

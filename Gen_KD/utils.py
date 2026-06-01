@@ -65,11 +65,17 @@ def save_checkpoint(
     """
     os.makedirs(checkpoint_dir, exist_ok=True)
     path = os.path.join(checkpoint_dir, f"gen_{generation}.pt")
+
+    model_state_dict = model.model.state_dict() if hasattr(model, "model") else model.state_dict()
+    projection_state_dict = projection.state_dict()
     torch.save(
         {
             "generation": generation,
-            "model_state_dict": model.state_dict(),
-            "projection_state_dict": projection.state_dict(),
+            "model_name": getattr(model, "model_name", None),
+            "student_state_dict": model_state_dict,
+            "model_state_dict": model_state_dict,
+            "proj_student_state_dict": projection_state_dict,
+            "projection_state_dict": projection_state_dict,
         },
         path,
     )
@@ -87,6 +93,10 @@ def load_checkpoint(
         The generation index stored in the checkpoint.
     """
     ckpt = torch.load(path, map_location="cpu")
-    model.load_state_dict(ckpt["model_state_dict"])
+    model_state_dict = ckpt["model_state_dict"]
+    if hasattr(model, "model"):
+        model.model.load_state_dict(model_state_dict)
+    else:
+        model.load_state_dict(model_state_dict)
     projection.load_state_dict(ckpt["projection_state_dict"])
     return ckpt["generation"]

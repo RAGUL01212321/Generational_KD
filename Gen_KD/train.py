@@ -8,6 +8,7 @@ Usage:
 """
 
 import argparse
+from pathlib import Path
 
 import torch
 from datasets import load_dataset
@@ -29,22 +30,26 @@ def parse_args() -> argparse.Namespace:
     )
 
     # Training
-    p.add_argument("--common-dim", type=int, default=256)
-    p.add_argument("--lr", type=float, default=5e-5)
-    p.add_argument("--batch-size", type=int, default=8)
-    p.add_argument("--max-seq-len", type=int, default=128)
+    p.add_argument("--common-dim", type=int, default=768)
+    p.add_argument("--lr", type=float, default=1e-5)
+    p.add_argument("--batch-size", type=int, default=2)
+    p.add_argument("--max-seq-len", type=int, default=512)
     p.add_argument("--epochs", type=int, default=3)
-    p.add_argument("--warmup-steps", type=int, default=100)
-    p.add_argument("--grad-accum", type=int, default=1)
+    p.add_argument("--warmup-steps", type=int, default=500)
+    p.add_argument("--grad-accum", type=int, default=8)
     p.add_argument("--seed", type=int, default=42)
 
     # Pooling & loss
     p.add_argument("--pooling", choices=["mean", "cls"], default="mean")
-    p.add_argument(
-        "--weight-strategy", choices=["uniform", "linear_decay"], default="uniform",
-    )
+    p.add_argument("--kd-loss-weight", type=float, default=0.6)
+    p.add_argument("--ce-loss-weight", type=float, default=0.4)
 
     # Dataset
+    p.add_argument(
+        "--dataset-path",
+        default="/Hikigai/Gen_KD/Dataset/ApolloCorpus/pretrain/medicalGuideline_en_qa_90k.json",
+        help="Local JSON dataset path on the server; if present, this is loaded directly.",
+    )
     p.add_argument("--dataset", default="wikitext")
     p.add_argument("--dataset-config", default="wikitext-2-raw-v1")
     p.add_argument("--dataset-split", default="train")
@@ -53,7 +58,7 @@ def parse_args() -> argparse.Namespace:
 
     # I/O
     p.add_argument("--device", default=None, help="auto-detect if not set")
-    p.add_argument("--checkpoint-dir", default="checkpoints")
+    p.add_argument("--checkpoint-dir", default="kd_checkpoints")
     p.add_argument("--log-every", type=int, default=50)
 
     # Debug
@@ -79,7 +84,9 @@ def build_config(args: argparse.Namespace) -> GenKDConfig:
         gradient_accumulation_steps=args.grad_accum,
         seed=args.seed,
         pooling_mode=args.pooling,
-        weight_strategy=args.weight_strategy,
+        kd_loss_weight=args.kd_loss_weight,
+        ce_loss_weight=args.ce_loss_weight,
+        dataset_path=args.dataset_path,
         dataset_name=args.dataset,
         dataset_config=args.dataset_config,
         dataset_split=args.dataset_split,
@@ -96,16 +103,21 @@ def build_config(args: argparse.Namespace) -> GenKDConfig:
     return cfg
 
 
-def build_dataloader(cfg: GenKDConfig, tokenizer) -> DataLoader:
+def build_dataloader(cfg: GenKDConfig, tokenizers: list) -> DataLoader:
     """Load and tokenize the dataset, return a DataLoader."""
     logger = setup_logging()
-    logger.info(f"Loading dataset: {cfg.dataset_name} / {cfg.dataset_config}")
+    dataset_path = Path(cfg.dataset_path)
 
-    ds = load_dataset(
-        cfg.dataset_name,
-        cfg.dataset_config,
-        split=cfg.dataset_split,
-    )
+    if dataset_path.exists():
+        logger.info(f"Loading local JSON dataset: {dataset_path}")
+        ds = load_dataset("json", data_files=str(dataset_path), split=cfg.dataset_split)
+    else:
+        logger.info(f"Loading dataset: {cfg.dataset_name} / {cfg.dataset_config}")
+        ds = load_dataset(
+            cfg.dataset_name,
+            cfg.dataset_config,
+            split=cfg.dataset_split,
+        )
 
     # Filter out empty strings
     ds = ds.filter(lambda x: len(x[cfg.dataset_text_field].strip()) > 0)
@@ -117,13 +129,17 @@ def build_dataloader(cfg: GenKDConfig, tokenizer) -> DataLoader:
     logger.info(f"Dataset size: {len(ds)} samples")
 
     def tokenize_fn(examples):
-        return tokenizer(
-            examples[cfg.dataset_text_field],
-            max_length=cfg.max_seq_len,
-            padding="max_length",
-            truncation=True,
-            return_tensors="pt",
-        )
+        features = {}
+        for idx, tokenizer in enumerate(tokenizers):
+            encoded = tokenizer(
+                examples[cfg.dataset_text_field],
+                max_length=cfg.max_seq_len,
+                padding="max_length",
+                truncation=True,
+            )
+            features[f"input_ids_{idx}"] = encoded["input_ids"]
+            features[f"attention_mask_{idx}"] = encoded["attention_mask"]
+        return features
 
     ds = ds.map(tokenize_fn, batched=True, remove_columns=ds.column_names)
     ds.set_format("torch")
@@ -142,30 +158,37 @@ def main():
     logger.info("  Generational Knowledge Distillation")
     logger.info("=" * 60)
     logger.info(f"  Models       : {cfg.model_names}")
-    logger.info(f"  Generations  : {cfg.num_generations}")
+    logger.info("  Roles        : teacher, assistant, student")
     logger.info(f"  Device       : {cfg.device}")
     logger.info(f"  Common dim   : {cfg.common_dim}")
     logger.info(f"  Pooling      : {cfg.pooling_mode}")
-    logger.info(f"  Weight strat : {cfg.weight_strategy}")
+    logger.info(f"  Dataset path : {cfg.dataset_path}")
+    logger.info(
+        "  Loss         : "
+        f"kd={cfg.kd_loss_weight} * mean(MSE(student, teacher), MSE(student, assistant)) "
+        f"+ ce={cfg.ce_loss_weight} * CE"
+    )
     if args.dry_run:
         logger.info("  *** DRY RUN — 1 batch per generation ***")
     logger.info("=" * 60)
-
-    # ---- Load tokenizer (use the teacher's tokenizer for all models) ---- #
-    tokenizer = load_tokenizer(cfg.model_names[0])
-
-    # ---- Build dataloader ---- #
-    dataloader = build_dataloader(cfg, tokenizer)
 
     # ---- Load models ---- #
     logger.info("Loading models...")
     models = []
     for i, name in enumerate(cfg.model_names):
-        role = "Teacher" if i == 0 else f"Student {i}"
+        role = "Teacher" if i == 0 else "Assistant" if i == 1 else "Student"
         logger.info(f"  [{role}] Loading {name}...")
         m = ModelWrapper(name, device=cfg.device)
         models.append(m)
-    logger.info("All models loaded ✓")
+    logger.info("All models loaded")
+
+    # ---- Load tokenizers ---- #
+    # Qwen and SmolLM2 do not share a vocabulary, so tokenize the same text
+    # separately for each model and compare only pooled projected embeddings.
+    tokenizers = [load_tokenizer(model.model_name) for model in models]
+
+    # ---- Build dataloader ---- #
+    dataloader = build_dataloader(cfg, tokenizers)
 
     # ---- Train ---- #
     trainer = GenKDTrainer(config=cfg, models=models, dataloader=dataloader)

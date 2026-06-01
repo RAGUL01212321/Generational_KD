@@ -111,6 +111,12 @@ class GenKDTrainer:
         self.summary_path = self.metrics_log_dir / "training_summary.json"
         self._initialize_metric_outputs()
 
+        self.checkpoint_dir = Path(config.checkpoint_dir)
+        self.checkpoint_dir.mkdir(
+            parents=True,
+            exist_ok=True
+        )
+
     def _next_run_output_dir(self) -> Path:
         """Return the next GenN_run directory for this training launch."""
         run_root = Path(self.config.run_output_root)

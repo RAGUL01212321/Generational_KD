@@ -103,6 +103,24 @@ def build_config(args: argparse.Namespace) -> GenKDConfig:
     return cfg
 
 
+def _coerce_text(value) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        parts = [text for text in (_coerce_text(item).strip() for item in value) if text]
+        return " ".join(parts)
+    if isinstance(value, dict):
+        for key in ("text", "content", "value", "prompt", "response", "instruction", "input", "output", "answer"):
+            if key in value:
+                text = _coerce_text(value[key]).strip()
+                if text:
+                    return text
+        return " ".join(str(item) for item in value.values() if item is not None)
+    return str(value)
+
+
 def build_dataloader(cfg: GenKDConfig, tokenizers: list) -> DataLoader:
     """Load and tokenize the dataset, return a DataLoader."""
     logger = setup_logging()
@@ -120,7 +138,7 @@ def build_dataloader(cfg: GenKDConfig, tokenizers: list) -> DataLoader:
         )
 
     # Filter out empty strings
-    ds = ds.filter(lambda x: len(x[cfg.dataset_text_field].strip()) > 0)
+    ds = ds.filter(lambda x: len(_coerce_text(x[cfg.dataset_text_field]).strip()) > 0)
 
     # Optional sample cap
     if cfg.max_samples is not None:
@@ -129,10 +147,11 @@ def build_dataloader(cfg: GenKDConfig, tokenizers: list) -> DataLoader:
     logger.info(f"Dataset size: {len(ds)} samples")
 
     def tokenize_fn(examples):
+        texts = [_coerce_text(value).strip() for value in examples[cfg.dataset_text_field]]
         features = {}
         for idx, tokenizer in enumerate(tokenizers):
             encoded = tokenizer(
-                examples[cfg.dataset_text_field],
+                texts,
                 max_length=cfg.max_seq_len,
                 padding="max_length",
                 truncation=True,

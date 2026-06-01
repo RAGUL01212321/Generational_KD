@@ -64,6 +64,28 @@ def _assistant_tokenizer_id(cfg: GenKDConfig) -> str:
     return _assistant_base_model_id(cfg)
 
 
+def _coerce_text(value: Any) -> str:
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        return value
+    if isinstance(value, (list, tuple)):
+        parts = [text for text in (_coerce_text(item).strip() for item in value) if text]
+        return " ".join(parts)
+    if isinstance(value, dict):
+        for key in ("text", "content", "value", "prompt", "response", "instruction", "input", "output", "answer"):
+            if key in value:
+                text = _coerce_text(value[key]).strip()
+                if text:
+                    return text
+        return " ".join(str(item) for item in value.values() if item is not None)
+    return str(value)
+
+
+def _normalize_text_batch(values: Any) -> list[str]:
+    return [_coerce_text(value).strip() for value in values]
+
+
 def _load_batch(cfg: GenKDConfig, tokenizer) -> Dict[str, torch.Tensor]:
     dataset_path = Path(cfg.dataset_path)
     if not dataset_path.exists():
@@ -75,12 +97,13 @@ def _load_batch(cfg: GenKDConfig, tokenizer) -> Dict[str, torch.Tensor]:
             f"Missing text field '{cfg.dataset_text_field}' in dataset columns: {ds.column_names}"
         )
 
-    ds = ds.filter(lambda x: len(x[cfg.dataset_text_field].strip()) > 0)
+    ds = ds.filter(lambda x: len(_coerce_text(x[cfg.dataset_text_field]).strip()) > 0)
     ds = ds.select(range(min(len(ds), 1)))
 
     def tokenize_fn(examples):
+        texts = _normalize_text_batch(examples[cfg.dataset_text_field])
         return tokenizer(
-            examples[cfg.dataset_text_field],
+            texts,
             max_length=cfg.max_seq_len,
             padding="max_length",
             truncation=True,

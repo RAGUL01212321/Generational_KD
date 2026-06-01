@@ -86,7 +86,7 @@ python -m Gen_KD.verify_pipeline
 To override models:
 
 ```bash
-python -m Gen_KD.train --models "Qwen/Qwen1.5-1.8B" "/Hikigai/Gen_KD/kd_pipeline/kd_checkpoints/Qwen_3/final.pt" "HuggingFaceTB/SmolLM2-360M"
+python -m Gen_KD.train --models "Qwen/Qwen1.5-1.8B" "./kd_pipeline/kd_checkpoints/Qwen_3/final.pt" "HuggingFaceTB/SmolLM2-360M"
 ```
 
 The default dataset path is:

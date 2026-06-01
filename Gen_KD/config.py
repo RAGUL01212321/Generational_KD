@@ -38,7 +38,7 @@ class GenKDConfig:
     # --- Models ---
     model_names: List[str] = field(default_factory=lambda: [
         "Qwen/Qwen1.5-1.8B",  # Teacher (M[0])
-        "/Hikigai/Gen_KD/kd_pipeline/kd_checkpoints/Qwen_3/final.pt",  # Assistant (M[1])
+        "./kd_pipeline/kd_checkpoints/Qwen_3/final.pt",  # Assistant (M[1]) (repo-relative)
         "HuggingFaceTB/SmolLM2-360M",  # Student (M[2])
     ])
     expected_hidden_dims: Optional[List[int]] = field(default_factory=lambda: [

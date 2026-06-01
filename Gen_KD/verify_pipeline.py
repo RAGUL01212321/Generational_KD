@@ -24,7 +24,39 @@ from typing import Any, Dict, Iterable, Tuple
 
 import torch
 from datasets import load_dataset
-from torch.optim import Adafactor
+
+# Prefer the transformers Adafactor (supports scale_parameter/relative_step)
+try:
+    from transformers import Adafactor as _HF_Adafactor  # type: ignore
+    _ADAFACTOR_BACKEND = "transformers"
+except Exception:
+    _HF_Adafactor = None
+    _ADAFACTOR_BACKEND = None
+
+try:
+    from torch.optim import Adafactor as _Torch_Adafactor  # type: ignore
+    if _ADAFACTOR_BACKEND is None:
+        _ADAFACTOR_BACKEND = "torch"
+except Exception:
+    _Torch_Adafactor = None
+
+
+def _make_adafactor(params, lr: float, clip_threshold: float = 1.0):
+    if _ADAFACTOR_BACKEND == "transformers" and _HF_Adafactor is not None:
+        return _HF_Adafactor(
+            params,
+            lr=lr,
+            scale_parameter=False,
+            relative_step=False,
+            warmup_init=False,
+            clip_threshold=clip_threshold,
+        )
+    if _Torch_Adafactor is not None:
+        try:
+            return _Torch_Adafactor(params, lr=lr, clip_threshold=clip_threshold)
+        except TypeError:
+            return _Torch_Adafactor(params, lr=lr)
+    raise ImportError("No usable Adafactor found; install 'transformers' or a newer 'torch'.")
 
 from Gen_KD.config import GenKDConfig
 from Gen_KD.models import ModelWrapper, load_tokenizer
@@ -272,12 +304,9 @@ def main() -> int:
         proj_assistant = ProjectionHead(assistant.hidden_dim, cfg.common_dim).to(device)
         proj_student = ProjectionHead(student.hidden_dim, cfg.common_dim).to(device)
 
-        optimizer = Adafactor(
+        optimizer = _make_adafactor(
             list(student.parameters()) + list(proj_student.parameters()),
             lr=cfg.learning_rate,
-            scale_parameter=False,
-            relative_step=False,
-            warmup_init=False,
             clip_threshold=1.0,
         )
 

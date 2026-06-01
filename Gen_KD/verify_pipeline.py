@@ -54,6 +54,12 @@ def _resolve_config(args: argparse.Namespace) -> GenKDConfig:
     return cfg
 
 
+def _assistant_base_model_id(cfg: GenKDConfig) -> str:
+    # The assistant checkpoint is a distilled Qwen 0.5B checkpoint, so its
+    # weights must be loaded into the original Qwen 1.5-0.5B architecture.
+    return "Qwen/Qwen1.5-0.5B"
+
+
 def _load_batch(cfg: GenKDConfig, tokenizer) -> Dict[str, torch.Tensor]:
     dataset_path = Path(cfg.dataset_path)
     if not dataset_path.exists():
@@ -203,7 +209,11 @@ def main() -> int:
         print(f"  labels         : {tuple(labels.shape)}")
 
         teacher = ModelWrapper(cfg.model_names[0], device=cfg.device)
-        assistant = ModelWrapper(cfg.model_names[1], device=cfg.device)
+        assistant = ModelWrapper(
+            cfg.model_names[1],
+            device=cfg.device,
+            base_model_name=_assistant_base_model_id(cfg),
+        )
         student = ModelWrapper(cfg.model_names[2], device=cfg.device)
 
         teacher.hidden_dim = teacher.model.config.hidden_size

@@ -20,10 +20,16 @@ class ModelWrapper(nn.Module):
     generational distillation loop.
     """
 
-    def __init__(self, model_name_or_path: str, device: str = "cuda"):
+    def __init__(
+        self,
+        model_name_or_path: str,
+        device: str = "cuda",
+        base_model_name: Optional[str] = None,
+    ):
         super().__init__()
         self.model_name = model_name_or_path
         self.device = device
+        self.base_model_name = base_model_name
         self.checkpoint_path: Optional[str] = None
         self.loaded_checkpoint: Optional[dict[str, Any]] = None
 
@@ -49,6 +55,9 @@ class ModelWrapper(nn.Module):
         )
 
     def _resolve_base_model_name(self, checkpoint: dict[str, Any]) -> str:
+        if self.base_model_name:
+            return self.base_model_name
+
         config = checkpoint.get("config", {}) if isinstance(checkpoint.get("config", {}), dict) else {}
 
         def _is_checkpoint_path(value: Any) -> bool:

@@ -496,6 +496,8 @@ class GenKDTrainer:
 
         accumulation_steps = max(1, cfg.gradient_accumulation_steps)
         last_epoch = 0
+        steps_per_epoch = len(self.dataloader)
+        half_epoch_step = max(1, steps_per_epoch // 2)
 
         for epoch in range(cfg.epochs):
             last_epoch = epoch + 1
@@ -503,7 +505,7 @@ class GenKDTrainer:
             num_batches = 0
             self.optimizer.zero_grad(set_to_none=True)
 
-            for batch in self.dataloader:
+            for batch_idx, batch in enumerate(self.dataloader):
                 loss = self._train_step(0, assistant_idx, student_idx, batch)
                 if not torch.isfinite(loss):
                     self.logger.warning(
@@ -543,6 +545,27 @@ class GenKDTrainer:
                         f"KD_T {kd_teacher:.6f} KD_A {kd_assistant:.6f}"
                     )
 
+                    # --------------------------------------------------
+                    # Half-epoch checkpoint
+                    # --------------------------------------------------
+
+                    current_step_in_epoch = batch_idx + 1
+
+                    if current_step_in_epoch == half_epoch_step:
+
+                        checkpoint_path = save_checkpoint(
+                            self.models[student_idx],
+                            self.projections[student_idx],
+                            student_idx,
+                            cfg.checkpoint_dir,
+                            metadata=self._checkpoint_metadata(epoch + 1),
+                            suffix=f"epoch{epoch+1}_half",
+                        )
+
+                        self.logger.info(
+                            f"  [Gen {student_idx}] Half-epoch checkpoint saved -> {checkpoint_path}"
+                        )
+
             if num_batches == 0:
                 raise RuntimeError(
                     f"Generation {student_idx} produced no finite training batches."
@@ -560,6 +583,7 @@ class GenKDTrainer:
             student_idx,
             cfg.checkpoint_dir,
             metadata=self._checkpoint_metadata(last_epoch),
+            suffix="final",
         )
         self.logger.info(f"  Checkpoint saved → {checkpoint_path}")
 

@@ -52,6 +52,7 @@ def save_checkpoint(
     generation: int,
     checkpoint_dir: str,
     metadata: dict | None = None,
+    suffix: str = "",
 ) -> str:
     """Save model + projection checkpoint for a given generation.
 
@@ -65,7 +66,13 @@ def save_checkpoint(
         Path to the saved checkpoint file.
     """
     os.makedirs(checkpoint_dir, exist_ok=True)
-    path = os.path.join(checkpoint_dir, f"gen_{generation}.pt")
+    filename = (
+        f"gen_{generation}.pt"
+        if not suffix
+        else f"gen_{generation}_{suffix}.pt"
+    )
+
+    path = os.path.join(checkpoint_dir, filename)
 
     model_state_dict = model.model.state_dict() if hasattr(model, "model") else model.state_dict()
     projection_state_dict = projection.state_dict()

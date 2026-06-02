@@ -44,7 +44,7 @@ logger = logging.getLogger("GenKD_Eval")
 
 class EvalDataset(Dataset):
     """Simple JSON dataset reader for evaluation."""
-    def __init__(self, data_path: Path, tokenizers: list, max_seq_len: int, text_field: str = "text"):
+    def __init__(self, data_path: Path, tokenizers: list, max_seq_len: int, text_field: str = "text", dry_run: bool = False):
         if not data_path.exists():
             raise FileNotFoundError(f"Dataset path not found: {data_path}")
         
@@ -52,6 +52,9 @@ class EvalDataset(Dataset):
         with open(data_path, "r", encoding="utf-8") as f:
             self.raw_data = json.load(f)
         
+        if dry_run:
+            self.raw_data = self.raw_data[:8]
+            
         self.samples = []
         # Support both QA list format [question, answer] and dict format
         for item in self.raw_data:
@@ -135,7 +138,7 @@ def run_evaluation(args):
 
     # 2. Build Dataloader
     try:
-        eval_dataset = EvalDataset(Path(args.dataset_path), tokenizers, args.max_seq_len)
+        eval_dataset = EvalDataset(Path(args.dataset_path), tokenizers, args.max_seq_len, dry_run=args.dry_run)
         dataloader = DataLoader(eval_dataset, batch_size=args.batch_size, shuffle=False)
     except Exception as e:
         logger.error(f"Failed to load dataset: {e}")
@@ -306,7 +309,8 @@ def run_evaluation(args):
         input_len = inputs["input_ids"].shape[1]
         return tokenizer.decode(outputs[0][input_len:], skip_special_tokens=True).strip()
 
-    for idx, question in enumerate(medical_questions, 1):
+    questions_to_eval = medical_questions[:2] if args.dry_run else medical_questions
+    for idx, question in enumerate(questions_to_eval, 1):
         logger.info(f"Generating answers for Q{idx}/20: {question[:40]}...")
         t_ans = generate_response(teacher, teacher_tok, question)
         a_ans = generate_response(assistant, teacher_tok, question)
@@ -454,6 +458,7 @@ if __name__ == "__main__":
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", default=None)
     p.add_argument("--output-dir", default="evaluation_results")
+    p.add_argument("--dry-run", action="store_true", help="Run a quick verification on a tiny subset.")
 
     args = p.parse_args()
     run_evaluation(args)

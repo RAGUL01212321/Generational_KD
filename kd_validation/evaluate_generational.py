@@ -335,7 +335,7 @@ def run_evaluation(args):
     x = np.arange(3)
     width = 0.35
     base_kd = [metrics["base"]["kd_t"], metrics["base"]["kd_a"], metrics["base"]["kd"]]
-    genkd_kd = [metrics["genkd"]["kd_t"], metrics["genkd"]["kd_a"], metrics["genkd"]]
+    genkd_kd = [metrics["genkd"]["kd_t"], metrics["genkd"]["kd_a"], metrics["genkd"]["kd"]]
     plt.bar(x - width/2, base_kd, width, label="Base SmolLM2", color="#E06666")
     plt.bar(x + width/2, genkd_kd, width, label="GenKD SmolLM2", color="#6FA8DC")
     plt.xticks(x, ["KD_T (Teacher)", "KD_A (Assistant)", "KD (Combined)"])

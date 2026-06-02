@@ -294,7 +294,7 @@ def run_evaluation(args):
     def generate_response(model, tokenizer, prompt, max_new_tokens=100):
         inputs = tokenizer(prompt, return_tensors="pt").to(device)
         with torch.no_grad():
-            outputs = model.generate(
+            outputs = model.model.generate(
                 input_ids=inputs["input_ids"],
                 attention_mask=inputs["attention_mask"],
                 max_new_tokens=max_new_tokens,

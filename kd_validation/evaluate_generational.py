@@ -126,8 +126,21 @@ def run_evaluation(args):
     device = args.device or ("cuda" if torch.cuda.is_available() else "cpu")
     logger.info(f"Using device: {device}")
 
-    # Output directory
-    out_dir = Path(args.output_dir)
+    # Output directory auto-detection (saves to the evaluation_results folder inside Gen2_<no of runs>)
+    checkpoint_path = Path(args.student_checkpoint).resolve()
+    run_folder = None
+    for parent in [checkpoint_path] + list(checkpoint_path.parents):
+        name = parent.name
+        if name.startswith("Gen2_") or name.startswith("Gen2"):
+            run_folder = parent
+            break
+
+    if run_folder is not None:
+        out_dir = run_folder / args.output_dir
+        logger.info(f"Auto-detected Gen2 run folder: '{run_folder.name}'. Saving evaluation outputs inside '{out_dir}'.")
+    else:
+        out_dir = Path(args.output_dir)
+
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # 1. Load Tokenizers

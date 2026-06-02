@@ -179,7 +179,15 @@ def run_evaluation(args):
     base_student = ModelWrapper(args.base_student_model, device=device)
     base_student.eval()
 
-    # GenKD Student
+    # 4. Load Projection Heads (Align teacher/base student RNG sequence with training)
+    proj_teacher = ProjectionHead(2048, 768).to(device)
+    proj_teacher.eval()
+
+    proj_assistant = load_projection_head(Path(args.assistant_checkpoint), 1024, 768, device)
+    proj_base_student = ProjectionHead(960, 768).to(device) # Base student uses default projection head
+    proj_base_student.eval()
+
+    # GenKD Student (loaded after base projection initialization to avoid shifting RNG)
     logger.info(f"Loading GenKD Student from checkpoint: {args.student_checkpoint}")
     genkd_student = ModelWrapper(
         args.student_checkpoint,
@@ -187,16 +195,6 @@ def run_evaluation(args):
         base_model_name=args.base_student_model
     )
     genkd_student.eval()
-
-    # 4. Load Projection Heads
-    # Seed before projection initialization to keep random init consistent for teacher
-    set_seed(args.seed)
-    proj_teacher = ProjectionHead(2048, 768).to(device)
-    proj_teacher.eval()
-
-    proj_assistant = load_projection_head(Path(args.assistant_checkpoint), 1024, 768, device)
-    proj_base_student = ProjectionHead(960, 768).to(device) # Base student uses default projection head
-    proj_base_student.eval()
 
     proj_genkd_student = load_projection_head(Path(args.student_checkpoint), 960, 768, device)
 

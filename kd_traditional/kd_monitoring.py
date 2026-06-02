@@ -21,6 +21,12 @@ except ImportError:
     MATPLOTLIB_AVAILABLE = False
 
 
+def format_val(val, fmt):
+    if isinstance(val, (int, float)):
+        return f"{val:{fmt}}"
+    return str(val)
+
+
 class TrainingMonitor:
     """Monitor training progress with detailed metrics."""
     
@@ -183,10 +189,10 @@ class TrainingMonitor:
             f.write("-" * 70 + "\n")
             f.write("LOSS METRICS\n")
             f.write("-" * 70 + "\n")
-            f.write(f"Current Loss:       {stats.get('current_loss', 'N/A'):.6f}\n")
-            f.write(f"Average Loss:       {stats.get('avg_loss', 'N/A'):.6f}\n")
-            f.write(f"Min Loss:           {stats.get('min_loss', 'N/A'):.6f}\n")
-            f.write(f"Max Loss:           {stats.get('max_loss', 'N/A'):.6f}\n\n")
+            f.write(f"Current Loss:       {format_val(stats.get('current_loss', 'N/A'), '.6f')}\n")
+            f.write(f"Average Loss:       {format_val(stats.get('avg_loss', 'N/A'), '.6f')}\n")
+            f.write(f"Min Loss:           {format_val(stats.get('min_loss', 'N/A'), '.6f')}\n")
+            f.write(f"Max Loss:           {format_val(stats.get('max_loss', 'N/A'), '.6f')}\n\n")
             
             f.write("-" * 70 + "\n")
             f.write("EPOCH SUMMARY\n")
@@ -206,9 +212,9 @@ class TrainingMonitor:
                 f.write("-" * 70 + "\n")
                 f.write("LOSS TREND (Last 100 steps)\n")
                 f.write("-" * 70 + "\n")
-                f.write(f"Initial Loss:       {trend.get('initial_loss', 'N/A'):.6f}\n")
-                f.write(f"Current Loss:       {trend.get('current_loss', 'N/A'):.6f}\n")
-                f.write(f"Improvement:        {trend.get('improvement', 0):.6f} ({trend.get('improvement_percent', 0):.2f}%)\n\n")
+                f.write(f"Initial Loss:       {format_val(trend.get('initial_loss', 'N/A'), '.6f')}\n")
+                f.write(f"Current Loss:       {format_val(trend.get('current_loss', 'N/A'), '.6f')}\n")
+                f.write(f"Improvement:        {format_val(trend.get('improvement', 0), '.6f')} ({format_val(trend.get('improvement_percent', 0), '.2f')}%)\n\n")
             
             f.write("=" * 70 + "\n")
         
@@ -343,13 +349,13 @@ class TrainingMonitor:
         
         print(f"\nLoss Metrics:")
         current_loss = stats.get('current_loss', 'N/A')
-        print(f"  Current Loss:     {current_loss:.6f if isinstance(current_loss, (int, float)) else current_loss}")
+        print(f"  Current Loss:     {format_val(current_loss, '.6f')}")
         avg_loss = stats.get('avg_loss', 'N/A')
-        print(f"  Average Loss:     {avg_loss:.6f if isinstance(avg_loss, (int, float)) else avg_loss}")
+        print(f"  Average Loss:     {format_val(avg_loss, '.6f')}")
         min_loss = stats.get('min_loss', 'N/A')
-        print(f"  Min Loss:         {min_loss:.6f if isinstance(min_loss, (int, float)) else min_loss}")
+        print(f"  Min Loss:         {format_val(min_loss, '.6f')}")
         max_loss = stats.get('max_loss', 'N/A')
-        print(f"  Max Loss:         {max_loss:.6f if isinstance(max_loss, (int, float)) else max_loss}")
+        print(f"  Max Loss:         {format_val(max_loss, '.6f')}")
         
         print(f"\nStep/Epoch Info:")
         print(f"  Total Steps:      {stats.get('total_steps', 0)}")
@@ -358,7 +364,7 @@ class TrainingMonitor:
         print(f"\nTiming:")
         print(f"  Total Time:       {stats.get('time_elapsed_formatted', 'N/A')}")
         avg_time = stats.get('avg_time_per_step', 0)
-        print(f"  Avg Time/Step:    {avg_time:.4f if isinstance(avg_time, (int, float)) else avg_time}s")
+        print(f"  Avg Time/Step:    {format_val(avg_time, '.4f')}s")
         
         if "last_epoch_time" in stats:
             print(f"  Last Epoch Time:  {self._format_time(stats['last_epoch_time'])}")
@@ -366,9 +372,9 @@ class TrainingMonitor:
         trend = self.get_loss_trend()
         if trend:
             print(f"\nLoss Trend (Last 100 steps):")
-            print(f"  Initial Loss:     {trend.get('initial_loss', 'N/A'):.6f}")
-            print(f"  Current Loss:     {trend.get('current_loss', 'N/A'):.6f}")
-            print(f"  Improvement:      {trend.get('improvement', 0):.6f} ({trend.get('improvement_percent', 0):.2f}%)")
+            print(f"  Initial Loss:     {format_val(trend.get('initial_loss', 'N/A'), '.6f')}")
+            print(f"  Current Loss:     {format_val(trend.get('current_loss', 'N/A'), '.6f')}")
+            print(f"  Improvement:      {format_val(trend.get('improvement', 0), '.6f')} ({format_val(trend.get('improvement_percent', 0), '.2f')}%)")
         
         print("\n" + "=" * 70 + "\n")
         

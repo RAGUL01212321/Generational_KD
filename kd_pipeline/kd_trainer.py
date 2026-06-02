@@ -181,17 +181,20 @@ class KDTrainer:
     def _load_tokenizer(self, model_id: str):
         """Load tokenizer, using a safe local path when custom code is needed."""
         try:
-            return AutoTokenizer.from_pretrained(
+            tokenizer = AutoTokenizer.from_pretrained(
                 model_id,
                 trust_remote_code=False,
             )
         except Exception as e:
             print(f"Warning: Native tokenizer loading failed ({e}), trying with custom code...")
             model_path = self._safe_snapshot_path(model_id)
-            return AutoTokenizer.from_pretrained(
+            tokenizer = AutoTokenizer.from_pretrained(
                 model_path,
                 trust_remote_code=True,
             )
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.eos_token
+        return tokenizer
 
     def _load_model(self, model_id: str, freeze: bool = False):
         """Load model from HuggingFace."""

@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
 """
 evaluate_generational.py - Standalone evaluation pipeline for Generational KD experiment.
 Compares:
@@ -36,7 +37,7 @@ from Gen_KD.utils import set_seed
 # Setup logging
 logging.basicConfig(
     level=logging.INFO,
-    format="[%(asctime)s] %(levelname)s — %(message)s",
+    format="[%(asctime)s] %(levelname)s - %(message)s",
     datefmt="%H:%M:%S",
 )
 logger = logging.getLogger("GenKD_Eval")
@@ -94,17 +95,20 @@ class EvalDataset(Dataset):
         return features
 
 
-def load_projection_head(checkpoint_path: Path, input_dim: int, common_dim: int, device: str) -> ProjectionHead:
+def load_projection_head(checkpoint_path: Path, input_dim: int, common_dim: int, device: str, key_override: str = None) -> ProjectionHead:
     """Instantiate a ProjectionHead and load weights if available in checkpoint."""
     proj = ProjectionHead(input_dim, common_dim).to(device)
     if checkpoint_path.exists():
         logger.info(f"Loading projection from checkpoint: {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location=device)
-        proj_state = (
-            checkpoint.get("projection_state_dict")
-            or checkpoint.get("proj_student_state_dict")
-            or checkpoint.get("proj_teacher_state_dict")
-        )
+        if key_override:
+            proj_state = checkpoint.get(key_override)
+        else:
+            proj_state = (
+                checkpoint.get("projection_state_dict")
+                or checkpoint.get("proj_student_state_dict")
+                or checkpoint.get("proj_teacher_state_dict")
+            )
         if isinstance(proj_state, dict):
             # Normalize projection keys if they are nested
             normalized_state = {}
@@ -140,6 +144,19 @@ def run_evaluation(args):
         logger.info(f"Auto-detected Gen2 run folder: '{run_folder.name}'. Saving evaluation outputs inside '{out_dir}'.")
     else:
         out_dir = Path(args.output_dir)
+
+    # Don't overwrite the already existing evaluation_results path, append numbers next to it
+    if out_dir.exists():
+        base_name = out_dir.name
+        parent_dir = out_dir.parent
+        counter = 1
+        while True:
+            new_dir = parent_dir / f"{base_name}_{counter}"
+            if not new_dir.exists():
+                out_dir = new_dir
+                break
+            counter += 1
+        logger.info(f"Output directory already exists. Saving to new directory: '{out_dir}'")
 
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -179,8 +196,9 @@ def run_evaluation(args):
     base_student = ModelWrapper(args.base_student_model, device=device)
     base_student.eval()
 
-    # 4. Load Projection Heads (Align teacher/base student RNG sequence with training)
-    proj_teacher = ProjectionHead(2048, 768).to(device)
+    # 4. Load Projection Heads
+    # Load teacher projection from the assistant checkpoint (where it is saved as proj_teacher_state_dict)
+    proj_teacher = load_projection_head(Path(args.assistant_checkpoint), 2048, 768, device, key_override="proj_teacher_state_dict")
     proj_teacher.eval()
 
     proj_assistant = load_projection_head(Path(args.assistant_checkpoint), 1024, 768, device)
@@ -453,7 +471,7 @@ def run_evaluation(args):
         json.dump(report, f, indent=2)
     logger.info(f"Saved JSON report to {report_file}")
     
-    logger.info("Evaluation complete! All artifacts generated successfully. 🎉")
+    logger.info("Evaluation complete! All artifacts generated successfully.")
 
 
 if __name__ == "__main__":

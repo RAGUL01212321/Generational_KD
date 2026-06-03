@@ -195,7 +195,7 @@ def main():
     logger.info(f"  Run root     : {cfg.run_output_root}")
     logger.info(
         "  Loss         : "
-        f"kd={cfg.kd_loss_weight} * mean(MSE(student, teacher), MSE(student, assistant)) "
+        f"kd={cfg.kd_loss_weight} * (0.8 * MSE(student, assistant) + 0.2 * MSE(student, teacher)) "
         f"+ ce={cfg.ce_loss_weight} * CE"
     )
     if args.dry_run:

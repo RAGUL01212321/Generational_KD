@@ -18,7 +18,10 @@ and generational distillation flow:
         p_T = mean_pool(Z_T)
         p_A = mean_pool(Z_A)
         p_S = mean_pool(Z_S)
-        loss_kd = (MSE(p_S, p_T) + MSE(p_S, p_A)) / 2
+        loss_kd = (
+            0.8 * MSE(p_S, p_A) +
+            0.2 * MSE(p_S, p_T)
+        )
         loss = 0.6 * loss_kd + 0.4 * out_S.loss
         loss.backward()
         optimizer.step()
@@ -668,7 +671,10 @@ class GenKDTrainer:
 
         kd_teacher = self.mse(p_student, p_teacher)
         kd_assistant = self.mse(p_student, p_assistant)
-        loss_kd = (kd_teacher + kd_assistant) / 2
+        loss_kd = (
+            0.8 * kd_assistant +
+            0.2 * kd_teacher
+        )
 
         loss_ce = student_out.loss
         if loss_ce is None:

@@ -6,7 +6,7 @@ This folder implements the KD recipe:
 - Assistant: distilled Qwen 0.5B checkpoint, frozen
 - Student: `HuggingFaceTB/SmolLM2-360M`, trainable
 - Common projection dimension: `768`
-- Teacher and assistant KD losses are averaged
+- KD loss uses weighted contribution: 80% assistant KD and 20% teacher KD
 - Total loss: `0.6 * loss_kd + 0.4 * loss_ce`
 
 ## Algorithm
@@ -46,7 +46,10 @@ for batch in dataloader:
 
     kd_teacher = MSE(p_S, p_T)
     kd_assistant = MSE(p_S, p_A)
-    loss_kd = (kd_teacher + kd_assistant) / 2
+    loss_kd = (
+        0.8 * kd_assistant +
+        0.2 * kd_teacher
+    )
 
     loss = 0.6 * loss_kd + 0.4 * out_S.loss
 
@@ -108,7 +111,7 @@ If that file is not present, the CLI falls back to the configured HuggingFace da
 | `--max-seq-len` | `512` | Tokenized sequence length |
 | `--epochs` | `3` | Student training epochs |
 | `--pooling` | `mean` | Pooling mode (`mean` or `cls`) |
-| `--kd-loss-weight` | `0.6` | Weight for averaged KD loss |
+| `--kd-loss-weight` | `0.6` | Weight for weighted KD loss (0.8 assistant + 0.2 teacher) |
 | `--ce-loss-weight` | `0.4` | Weight for causal LM CE loss |
 | `--dataset-path` | server Apollo JSON path | Local JSON dataset path |
 | `--dry-run` | `false` | Uses 2 samples and 1 epoch for a quick check |

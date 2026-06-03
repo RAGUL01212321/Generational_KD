@@ -391,7 +391,10 @@ def main() -> int:
 
         kd_teacher = torch.nn.functional.mse_loss(p_student, p_teacher)
         kd_assistant = torch.nn.functional.mse_loss(p_student, p_assistant)
-        loss_kd = (kd_teacher + kd_assistant) / 2
+        loss_kd = (
+            0.8 * kd_assistant +
+            0.2 * kd_teacher
+        )
         loss_ce = student_out.loss if student_out.loss is not None else torch.tensor(0.0, device=device)
         total_loss = cfg.kd_loss_weight * loss_kd + cfg.ce_loss_weight * loss_ce
 
@@ -486,7 +489,10 @@ def main() -> int:
 
             kd_teacher = torch.nn.functional.mse_loss(p_student, p_teacher)
             kd_assistant = torch.nn.functional.mse_loss(p_student, p_assistant)
-            loss_kd = (kd_teacher + kd_assistant) / 2
+            loss_kd = (
+                0.8 * kd_assistant +
+                0.2 * kd_teacher
+            )
             loss_ce = student_out.loss if student_out.loss is not None else torch.tensor(0.0, device=device)
             total_loss = cfg.kd_loss_weight * loss_kd + cfg.ce_loss_weight * loss_ce
 

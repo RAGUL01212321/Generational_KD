@@ -63,7 +63,6 @@ def run_validation_pipeline():
         return 1
     
     print("\n✓ Validation completed successfully!")
-    print(f"Results saved to: kd_trad_validation/results/validation_results.json")
     
     return 0
 

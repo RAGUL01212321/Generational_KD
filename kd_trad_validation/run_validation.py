@@ -39,8 +39,23 @@ class ValidationPipeline:
         self.config = config
         self.device = torch.device(config.device)
         
-        # Create results directory
-        Path(config.results_file).parent.mkdir(parents=True, exist_ok=True)
+        # Resolve results file path with incremented directory name if already exists
+        results_file_path = Path(config.results_file)
+        parent_dir = results_file_path.parent
+        
+        if parent_dir.exists() and any(parent_dir.iterdir()):
+            base_parent_name = parent_dir.name
+            grandparent = parent_dir.parent
+            counter = 1
+            while True:
+                new_parent = grandparent / f"{base_parent_name}_{counter}"
+                if not new_parent.exists() or not any(new_parent.iterdir()):
+                    parent_dir = new_parent
+                    break
+                counter += 1
+                
+        self.actual_results_file = str(parent_dir / results_file_path.name)
+        parent_dir.mkdir(parents=True, exist_ok=True)
         
         logger.info("="*70)
         logger.info("TRADITIONAL KNOWLEDGE DISTILLATION VALIDATION PIPELINE")
@@ -304,7 +319,7 @@ class ValidationPipeline:
     
     def save_results(self, results: Dict):
         """Save validation results to file."""
-        output_file = self.config.results_file
+        output_file = self.actual_results_file
         
         with open(output_file, 'w') as f:
             json.dump(results, f, indent=2)

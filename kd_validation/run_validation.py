@@ -343,6 +343,24 @@ def main():
         action="store_true",
         help="Run qualitative evaluation (slow)"
     )
+    parser.add_argument(
+        "--student-model-id",
+        type=str,
+        default="Qwen/Qwen1.5-0.5B",
+        help="Student model ID"
+    )
+    parser.add_argument(
+        "--teacher-model-id",
+        type=str,
+        default="Qwen/Qwen1.5-1.8B",
+        help="Teacher model ID"
+    )
+    parser.add_argument(
+        "--common-dim",
+        type=int,
+        default=768,
+        help="Dimension of projection space"
+    )
     
     args = parser.parse_args()
     
@@ -352,6 +370,9 @@ def main():
         distilled_student_checkpoint=args.distilled_checkpoint,
         device=args.device,
         batch_size=args.batch_size,
+        student_model_id=args.student_model_id,
+        teacher_model_id=args.teacher_model_id,
+        common_dim=args.common_dim,
     )
     
     # Run validation

@@ -119,14 +119,25 @@ class ValidationPipeline:
             map_location=self.device
         )
         
+        def normalize_state_dict(state_dict):
+            normalized = {}
+            for k, v in state_dict.items():
+                if k.startswith("linear."):
+                    normalized[f"projection.{k}"] = v
+                else:
+                    normalized[k] = v
+            return normalized
+
         # Load distilled student projection
         if 'proj_student_state_dict' in checkpoint:
-            self.proj_student.load_state_dict(checkpoint['proj_student_state_dict'])
+            state_dict = normalize_state_dict(checkpoint['proj_student_state_dict'])
+            self.proj_student.load_state_dict(state_dict)
             logger.info("  ✓ Loaded distilled student projection")
         
         # Load teacher projection (IMPORTANT: same weights used during training)
         if 'proj_teacher_state_dict' in checkpoint:
-            self.proj_teacher.load_state_dict(checkpoint['proj_teacher_state_dict'])
+            state_dict = normalize_state_dict(checkpoint['proj_teacher_state_dict'])
+            self.proj_teacher.load_state_dict(state_dict)
             logger.info("  ✓ Loaded training teacher projection (ensures matching KD loss)")
         else:
             logger.warning("  ⚠ Teacher projection not found in checkpoint - KD loss will not match training!")
